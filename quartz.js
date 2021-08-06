@@ -4,13 +4,13 @@ const scheduleCsv =`"activity","start","category"
 "Yoga / Exercise",07:00:00,"health"
 "Breakfast",08:15:00,"meal"
 "Shower et al.",08:45:00,"health"
-"Meditation",09:30:00,"health"
-"Work",09:45:00,"work"
+"Meditation",09:45:00,"health"
+"Work",10:00:00,"work"
 "Lunch",12:45:00,"meal"
 "Relax",13:15:00,"realx"
 "Work",13:45:00,"work"
-"Daily start-up reflection (Personal)",18:00:00,"personal-lite"
-"Personal",18:30:00,"personal"
+"Daily start-up reflection (Personal)",18:15:00,"personal-lite"
+"Personal",18:45:00,"personal"
 "Dinner",20:00:00,"meal"
 "Relax",20:30:00,"realx"
 "Daily wind-down reflection (Work & Personal)",20:45:00,"work-lite"
@@ -58,7 +58,7 @@ for (i in scheduleRaw) {
 };
 
 render(schedule);
-setInterval(() => {render(schedule);}, 1000);
+setInterval(() => {render(schedule);}, 10000);
 
 function render(data) {
 	$("#schedule").empty();
