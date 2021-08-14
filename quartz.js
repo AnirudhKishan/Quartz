@@ -103,3 +103,9 @@ function isActive(item) {
 	
 	return nowDate >= startDate && nowDate < endDate;
 }
+
+if ("serviceWorker" in navigator) {
+  // register service worker
+  navigator.serviceWorker.register("./sw.js");
+}
+
