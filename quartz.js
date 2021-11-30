@@ -8,15 +8,15 @@ const scheduleCsv =`"activity","start","category"
 "Meditation",09:45:00,"health"
 "Work",10:00:00,"work"
 "Lunch",12:45:00,"meal"
-"Relax (after lunch)",13:15:00,"realx"
+"Relax (after lunch)",13:15:00,"relax"
 "Work",13:45:00,"work"
 "Daily start-up reflection (Personal)",18:00:00,"personal-lite"
 "Personal",18:30:00,"personal"
 "Dinner",20:00:00,"meal"
-"Relax (after dinner)",20:30:00,"realx"
+"Relax (after dinner)",20:30:00,"relax"
 "Daily wind-down reflection (Work & Personal)",21:00:00,"work-lite"
 "Night Routine",21:30:00,"routine"
-"Relax (at night)",22:00:00,"realx"
+"Relax (at night)",22:00:00,"relax"
 "Sleep",22:30:00,"sleep"
 `;
 
@@ -28,7 +28,7 @@ const categoryColour = {
 	"routine": "antiquewhite",
 	"meal": "tan",
 	"health": "moccasin",
-	"realx": "aquamarine",
+	"relax": "aquamarine",
 	"sleep": "lightgray",
 };
 
