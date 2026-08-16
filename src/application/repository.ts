@@ -7,8 +7,10 @@
 
 import type { BackupData } from '../domain/backup';
 import type {
+  DayDecision,
   Run,
   RunEvent,
+  SkipDayCommand,
   Timetable,
   TimetableRef,
   TimetableSummary,
@@ -31,6 +33,8 @@ export interface TimetableRepository {
   createRun(ref: TimetableRef, occurredAt: Date): Promise<Run>;
   getActiveRun(): Promise<Run | null>;
   getRun(runId: string): Promise<Run | null>;
+  getDayDecision(timezone: string, localDate: string): Promise<DayDecision | null>;
+  skipDay(command: SkipDayCommand): Promise<DayDecision>;
   completeRun(runId: string, occurredAt: Date): Promise<void>;
 
   /** Applies a guarded Next or Skip as one atomic write. */

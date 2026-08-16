@@ -9,7 +9,14 @@
 import { systemClock, type Clock } from '../domain/clock';
 import { QuartzError } from '../domain/errors';
 import { reconstructRunState } from '../domain/runState';
-import type { Run, RunState, TimetableRef, TransitionKind } from '../domain/types';
+import { getLocalDate } from '../domain/time';
+import type {
+  DayDecision,
+  Run,
+  RunState,
+  TimetableRef,
+  TransitionKind,
+} from '../domain/types';
 import type { TimetableRepository } from './repository';
 
 export class RunService {
@@ -40,6 +47,16 @@ export class RunService {
   async startRun(ref: TimetableRef): Promise<RunState> {
     const run = await this.repository.createRun(ref, this.clock.now());
     return this.loadState(run);
+  }
+
+  async skipDay(timezone: string, activeState: RunState | null): Promise<DayDecision> {
+    const occurredAt = this.clock.now();
+    return this.repository.skipDay({
+      timezone,
+      localDate: activeState?.run.localDate ?? getLocalDate(occurredAt, timezone),
+      occurredAt,
+      activeRunId: activeState?.run.id ?? null,
+    });
   }
 
   /**

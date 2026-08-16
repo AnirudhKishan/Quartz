@@ -165,7 +165,17 @@ export const reconstructRunState = (
     );
   }
 
-  if (status !== run.status) {
+  if (run.status === 'skipped') {
+    if (status !== 'active' && status !== 'completed') {
+      corrupt(`Skipped run ${run.id} must contain a valid run history`);
+    }
+    if (run.completedAt === null) {
+      corrupt(`Skipped run ${run.id} has no skip timestamp`);
+    }
+    status = 'skipped';
+    currentIndex = null;
+    currentItemStartedAt = null;
+  } else if (status !== run.status) {
     corrupt(
       `Run ${run.id} is stored as "${run.status}" but its events describe "${status}"`,
     );
@@ -191,7 +201,7 @@ export const reconstructRunState = (
     currentItem,
     currentItemStartedAt,
     nextItem,
-    canUndo: effectiveEvents.some(isTerminal),
+    canUndo: status !== 'skipped' && effectiveEvents.some(isTerminal),
     lastSeq: lastEvent ? lastEvent.seq : 0,
   };
 };

@@ -16,6 +16,15 @@ export interface TimetableItem {
   readonly plannedEnd: string;
 }
 
+export type Weekday =
+  | 'monday'
+  | 'tuesday'
+  | 'wednesday'
+  | 'thursday'
+  | 'friday'
+  | 'saturday'
+  | 'sunday';
+
 /** An immutable, versioned plan. Never mutate a version that a run has used. */
 export interface Timetable {
   readonly id: string;
@@ -23,6 +32,7 @@ export interface Timetable {
   readonly version: number;
   /** IANA timezone, e.g. `Asia/Kolkata`. */
   readonly timezone: string;
+  readonly eligibleWeekdays: readonly Weekday[];
   readonly items: readonly TimetableItem[];
 }
 
@@ -31,6 +41,7 @@ export interface TimetableSummary {
   readonly name: string;
   readonly version: number;
   readonly timezone: string;
+  readonly eligibleWeekdays: readonly Weekday[];
   readonly itemCount: number;
   readonly firstPlannedStart: string;
   readonly lastPlannedEnd: string;
@@ -41,7 +52,7 @@ export interface TimetableRef {
   readonly version: number;
 }
 
-export type RunStatus = 'active' | 'completed';
+export type RunStatus = 'active' | 'completed' | 'skipped';
 
 export interface Run {
   readonly id: string;
@@ -52,6 +63,20 @@ export interface Run {
   readonly startedAt: Date;
   readonly completedAt: Date | null;
   readonly status: RunStatus;
+}
+
+export interface DayDecision {
+  readonly timezone: string;
+  readonly localDate: string;
+  readonly status: 'skipped';
+  readonly occurredAt: Date;
+}
+
+export interface SkipDayCommand {
+  readonly timezone: string;
+  readonly localDate: string;
+  readonly occurredAt: Date;
+  readonly activeRunId: string | null;
 }
 
 export type RunEventType = 'started' | 'completed' | 'skipped' | 'undo';

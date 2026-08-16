@@ -14,8 +14,10 @@ import { timetableKey, timetablesEqual, toSummary } from '../domain/timetable';
 import { getLocalDate } from '../domain/time';
 import { applyRunPatch, planStartRun, planTransition, planUndo } from '../domain/transitions';
 import type {
+  DayDecision,
   Run,
   RunEvent,
+  SkipDayCommand,
   Timetable,
   TimetableRef,
   TimetableSummary,
@@ -26,6 +28,7 @@ export class InMemoryRepository implements TimetableRepository {
   private timetables = new Map<string, Timetable>();
   private runs = new Map<string, Run>();
   private events = new Map<string, RunEvent[]>();
+  private dayDecisions = new Map<string, DayDecision>();
 
   constructor(private readonly ids: IdGenerator = systemIdGenerator) {}
 
@@ -67,7 +70,11 @@ export class InMemoryRepository implements TimetableRepository {
       throw new QuartzError('run-already-active', 'A day is already in progress.');
     }
     const timetable = await this.getTimetable(ref.timetableId, ref.version);
-    const runId = this.ids.newRunId(getLocalDate(occurredAt, timetable.timezone));
+    const localDate = getLocalDate(occurredAt, timetable.timezone);
+    if (await this.getDayDecision(timetable.timezone, localDate)) {
+      throw new QuartzError('day-skipped', 'Tracking has been skipped for this day.');
+    }
+    const runId = this.ids.newRunId(localDate);
     const started = planStartRun(timetable, runId, occurredAt);
 
     this.runs.set(runId, started.run);
@@ -81,6 +88,68 @@ export class InMemoryRepository implements TimetableRepository {
 
   async getRun(runId: string): Promise<Run | null> {
     return this.runs.get(runId) ?? null;
+  }
+
+  async getDayDecision(timezone: string, localDate: string): Promise<DayDecision | null> {
+    const stored = this.dayDecisions.get(`${timezone}|${localDate}`);
+    if (stored) return stored;
+    for (const run of this.runs.values()) {
+      if (run.status !== 'skipped' || run.localDate !== localDate || !run.completedAt) continue;
+      const timetable = await this.getTimetable(run.timetableId, run.timetableVersion);
+      if (timetable.timezone === timezone) {
+        return {
+          timezone,
+          localDate,
+          status: 'skipped',
+          occurredAt: run.completedAt,
+        };
+      }
+    }
+    return null;
+  }
+
+  async skipDay(command: SkipDayCommand): Promise<DayDecision> {
+    const active = await this.getActiveRun();
+    if (active) {
+      if (command.activeRunId !== active.id) {
+        throw new QuartzError('stale-state', 'The active day changed before it could be skipped.');
+      }
+      const timetable = await this.getTimetable(active.timetableId, active.timetableVersion);
+      if (
+        timetable.timezone !== command.timezone ||
+        active.localDate !== command.localDate
+      ) {
+        throw new QuartzError('stale-state', 'The active run belongs to a different local day.');
+      }
+      this.runs.set(active.id, {
+        ...active,
+        status: 'skipped',
+        completedAt: command.occurredAt,
+      });
+    } else if (command.activeRunId !== null) {
+      throw new QuartzError('no-active-run', 'There is no active day to skip.');
+    } else {
+      for (const run of this.runs.values()) {
+        if (run.status !== 'completed' || run.localDate !== command.localDate) continue;
+        const timetable = await this.getTimetable(run.timetableId, run.timetableVersion);
+        if (timetable.timezone === command.timezone) {
+          this.runs.set(run.id, {
+            ...run,
+            status: 'skipped',
+            completedAt: command.occurredAt,
+          });
+        }
+      }
+    }
+
+    const decision: DayDecision = {
+      timezone: command.timezone,
+      localDate: command.localDate,
+      status: 'skipped',
+      occurredAt: command.occurredAt,
+    };
+    this.dayDecisions.set(`${command.timezone}|${command.localDate}`, decision);
+    return decision;
   }
 
   async completeRun(runId: string, occurredAt: Date): Promise<void> {
@@ -138,6 +207,7 @@ export class InMemoryRepository implements TimetableRepository {
     );
     this.runs = new Map(data.runs.map((run) => [run.id, run]));
     this.events = new Map();
+    this.dayDecisions = new Map();
     for (const event of data.events) {
       const list = this.events.get(event.runId) ?? [];
       list.push(event);

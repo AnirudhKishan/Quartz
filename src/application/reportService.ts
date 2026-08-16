@@ -36,6 +36,9 @@ export class ReportService {
   async loadRunReport(runId: string): Promise<RunReport> {
     const run = await this.repository.getRun(runId);
     if (!run) throw new QuartzError('not-found', `Run ${runId} does not exist.`);
+    if (run.status === 'skipped') {
+      throw new QuartzError('not-found', 'This day was skipped and is excluded from analysis.');
+    }
     return this.reportFor(run);
   }
 

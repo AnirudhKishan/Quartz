@@ -19,7 +19,14 @@ import {
 
 import { bootstrap, type Services } from '../application/bootstrap';
 import { QuartzError, isBlockingError, isQuartzError } from '../domain/errors';
-import type { RunState, Timetable, TimetableRef, TransitionKind } from '../domain/types';
+import { getLocalDate } from '../domain/time';
+import type {
+  DayDecision,
+  RunState,
+  Timetable,
+  TimetableRef,
+  TransitionKind,
+} from '../domain/types';
 
 export type AppPhase = 'loading' | 'ready' | 'blocked';
 
@@ -29,6 +36,8 @@ export interface AppStore {
   /** Set only when the app cannot safely offer actions. */
   readonly blockingError: QuartzError | null;
   readonly activeState: RunState | null;
+  readonly timetables: readonly Timetable[];
+  readonly dayDecision: DayDecision | null;
   /** True while a transition is in flight; every action button is disabled. */
   readonly busy: boolean;
   /** Transient, non-blocking message, e.g. a rejected duplicate press. */
@@ -37,6 +46,7 @@ export interface AppStore {
   startRun(ref: TimetableRef): Promise<void>;
   advance(kind: TransitionKind): Promise<void>;
   undo(): Promise<void>;
+  skipDay(): Promise<boolean>;
   reload(): Promise<void>;
 }
 
@@ -67,6 +77,7 @@ export const AppProvider = ({ services, bundledTimetables, children }: AppProvid
   const [phase, setPhase] = useState<AppPhase>('loading');
   const [blockingError, setBlockingError] = useState<QuartzError | null>(null);
   const [activeState, setActiveState] = useState<RunState | null>(null);
+  const [dayDecision, setDayDecision] = useState<DayDecision | null>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const inFlight = useRef(false);
@@ -85,6 +96,15 @@ export const AppProvider = ({ services, bundledTimetables, children }: AppProvid
         return;
       }
       setActiveState(outcome.activeState);
+      const timezone = outcome.activeState?.timetable.timezone ?? bundledTimetables[0]?.timezone;
+      setDayDecision(
+        timezone
+          ? await services.repository.getDayDecision(
+              timezone,
+              getLocalDate(services.clock.now(), timezone),
+            )
+          : null,
+      );
       setPhase('ready');
     },
     [services, bundledTimetables],
@@ -138,6 +158,8 @@ export const AppProvider = ({ services, bundledTimetables, children }: AppProvid
       phase,
       blockingError,
       activeState,
+      timetables: bundledTimetables,
+      dayDecision,
       busy,
       notice,
       dismissNotice: () => setNotice(null),
@@ -152,9 +174,49 @@ export const AppProvider = ({ services, bundledTimetables, children }: AppProvid
           if (!activeState) return null;
           return services.runs.undo(activeState);
         }),
+      skipDay: async () => {
+        if (inFlight.current) return false;
+        const timezone = activeState?.timetable.timezone ?? bundledTimetables[0]?.timezone;
+        if (!timezone) {
+          setNotice('No timetable timezone is available for this day.');
+          return false;
+        }
+        inFlight.current = true;
+        setBusy(true);
+        try {
+          const decision = await services.runs.skipDay(timezone, activeState);
+          setActiveState(null);
+          setDayDecision(decision);
+          setNotice(null);
+          return true;
+        } catch (error) {
+          const quartz = toQuartzError(error);
+          if (isBlockingError(quartz)) {
+            setBlockingError(quartz);
+            setPhase('blocked');
+          } else {
+            setNotice(quartz.message);
+          }
+          return false;
+        } finally {
+          inFlight.current = false;
+          setBusy(false);
+        }
+      },
       reload: () => load(false),
     }),
-    [services, phase, blockingError, activeState, busy, notice, guard, load],
+    [
+      services,
+      phase,
+      blockingError,
+      activeState,
+      bundledTimetables,
+      dayDecision,
+      busy,
+      notice,
+      guard,
+      load,
+    ],
   );
 
   return <AppContext.Provider value={store}>{children}</AppContext.Provider>;

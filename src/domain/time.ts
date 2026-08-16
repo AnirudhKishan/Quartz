@@ -7,6 +7,7 @@
  */
 
 import { QuartzError } from './errors';
+import type { Weekday } from './types';
 
 export interface LocalDateParts {
   year: number;
@@ -18,6 +19,7 @@ export interface LocalDateParts {
 }
 
 const formatterCache = new Map<string, Intl.DateTimeFormat>();
+const weekdayFormatterCache = new Map<string, Intl.DateTimeFormat>();
 
 const formatterFor = (timezone: string): Intl.DateTimeFormat => {
   const cached = formatterCache.get(timezone);
@@ -87,6 +89,18 @@ export const getTimezoneOffsetMs = (instant: Date, timezone: string): number => 
 export const getLocalDate = (instant: Date, timezone: string): string => {
   const { year, month, day } = getLocalParts(instant, timezone);
   return `${pad(year, 4)}-${pad(month, 2)}-${pad(day, 2)}`;
+};
+
+export const getLocalWeekday = (
+  instant: Date,
+  timezone: string,
+): Weekday => {
+  let formatter = weekdayFormatterCache.get(timezone);
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat('en-US', { timeZone: timezone, weekday: 'long' });
+    weekdayFormatterCache.set(timezone, formatter);
+  }
+  return formatter.format(instant).toLowerCase() as Weekday;
 };
 
 const pad = (value: number, length: number): string => String(value).padStart(length, '0');

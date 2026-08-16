@@ -6,6 +6,8 @@ export type QuartzErrorCode =
   | 'corrupt-history'
   | 'stale-state'
   | 'run-already-active'
+  | 'ineligible-day'
+  | 'day-skipped'
   | 'no-active-run'
   | 'run-completed'
   | 'nothing-to-undo'

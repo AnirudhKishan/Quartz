@@ -78,6 +78,64 @@ describe.each(adapters)('$name satisfies the repository contract', ({ create }) 
     expect(await repository.listRuns()).toHaveLength(1);
   });
 
+  it('records a whole-day skip before a run and blocks tracking for that date', async () => {
+    const decision = await repository.skipDay({
+      timezone: 'Asia/Kolkata',
+      localDate: '2026-03-02',
+      occurredAt: START,
+      activeRunId: null,
+    });
+
+    expect(decision).toMatchObject({
+      timezone: 'Asia/Kolkata',
+      localDate: '2026-03-02',
+      status: 'skipped',
+    });
+    expect(await repository.getDayDecision('Asia/Kolkata', '2026-03-02')).toEqual(decision);
+    await expect(repository.createRun(ref, START)).rejects.toThrow(/skipped for this day/);
+  });
+
+  it('stops an active run, retains its events, and excludes it from completed runs', async () => {
+    const run = await repository.createRun(ref, START);
+    await advance('next', new Date('2026-03-02T00:30:00.000Z'));
+    const eventsBeforeSkip = await repository.getRunEvents(run.id);
+
+    await repository.skipDay({
+      timezone: 'Asia/Kolkata',
+      localDate: '2026-03-02',
+      occurredAt: new Date('2026-03-02T00:45:00.000Z'),
+      activeRunId: run.id,
+    });
+
+    expect((await repository.getRun(run.id))?.status).toBe('skipped');
+    expect(await repository.getActiveRun()).toBeNull();
+    expect(await repository.getRunEvents(run.id)).toEqual(eventsBeforeSkip);
+    expect(await repository.listCompletedRuns()).toEqual([]);
+  });
+
+  it('excludes a run that completed earlier on the same day', async () => {
+    const run = await repository.createRun(ref, START);
+    await advance('next', new Date('2026-03-02T00:30:00.000Z'));
+    await advance('next', new Date('2026-03-02T02:00:00.000Z'));
+    await advance('next', new Date('2026-03-02T02:35:00.000Z'));
+
+    await repository.skipDay({
+      timezone: 'Asia/Kolkata',
+      localDate: '2026-03-02',
+      occurredAt: new Date('2026-03-02T03:00:00.000Z'),
+      activeRunId: null,
+    });
+
+    expect((await repository.getRun(run.id))?.status).toBe('skipped');
+    expect(await repository.listCompletedRuns()).toEqual([]);
+  });
+
+  it('rejects starting a plan on an ineligible weekend', async () => {
+    await expect(
+      repository.createRun(ref, new Date('2026-03-07T00:00:00.000Z')),
+    ).rejects.toThrow(/not available on this day/);
+  });
+
   it('applies Next as a single atomic write', async () => {
     const run = await repository.createRun(ref, START);
     await advance('next', new Date('2026-03-02T00:30:00.000Z'));
@@ -185,6 +243,24 @@ describe.each(adapters)('$name satisfies the repository contract', ({ create }) 
     expect((await restored.getActiveRun())?.id).toBe(run.id);
   });
 
+  it('derives a skipped-day decision after restoring retained skipped history', async () => {
+    const run = await repository.createRun(ref, START);
+    await repository.skipDay({
+      timezone: 'Asia/Kolkata',
+      localDate: '2026-03-02',
+      occurredAt: new Date('2026-03-02T00:15:00.000Z'),
+      activeRunId: run.id,
+    });
+    const restored = create();
+    await restored.replaceAll(await repository.exportAll());
+
+    expect(await restored.getDayDecision('Asia/Kolkata', '2026-03-02')).toMatchObject({
+      status: 'skipped',
+      localDate: '2026-03-02',
+    });
+    await expect(restored.createRun(ref, START)).rejects.toThrow(/skipped for this day/);
+  });
+
   it('replaces rather than merges on restore', async () => {
     await repository.createRun(ref, START);
     await repository.replaceAll({ timetables: [simpleTimetable], runs: [], events: [] });
@@ -196,6 +272,31 @@ describe.each(adapters)('$name satisfies the repository contract', ({ create }) 
 });
 
 describe('IndexedDbRepository durability', () => {
+  it('clears the pre-production version 1 database during the schema upgrade', async () => {
+    const name = `quartz-reset-${Date.now()}`;
+    await new Promise<void>((resolve, reject) => {
+      const open = globalThis.indexedDB.open(name, 1);
+      open.onupgradeneeded = () => {
+        const timetables = open.result.createObjectStore('timetables', {
+          keyPath: ['id', 'version'],
+        });
+        timetables.put(simpleTimetable);
+        open.result.createObjectStore('runs', { keyPath: 'id' });
+        open.result.createObjectStore('events', { keyPath: 'id' });
+      };
+      open.onsuccess = () => {
+        open.result.close();
+        resolve();
+      };
+      open.onerror = () => reject(open.error);
+    });
+
+    const repository = new IndexedDbRepository(name, sequentialIdGenerator());
+    expect(await repository.listTimetables()).toEqual([]);
+    expect(await repository.listRuns()).toEqual([]);
+    repository.close();
+  });
+
   it('restores the active run through a fresh connection', async () => {
     const name = `quartz-durability-${Date.now()}`;
     const first = new IndexedDbRepository(name, sequentialIdGenerator());

@@ -59,12 +59,68 @@ describe('web app manifest', () => {
 });
 
 describe('bundled timetables', () => {
-  it('bundles more than one selectable, versioned timetable', () => {
+  it('bundles exactly the two weekday plans', () => {
     const timetables = loadBundledTimetables();
 
-    expect(timetables.length).toBeGreaterThanOrEqual(2);
-    expect(new Set(timetables.map((timetable) => timetable.id)).size).toBeGreaterThanOrEqual(2);
-    // The same stable ID must be able to carry more than one immutable version.
-    expect(timetables.filter((timetable) => timetable.id === 'weekday-gym')).toHaveLength(2);
+    expect(timetables.map((timetable) => `${timetable.id}@${timetable.version}`).sort()).toEqual([
+      'weekday-gym@1',
+      'weekday-no-gym@1',
+    ]);
+    for (const timetable of timetables) {
+      expect(timetable.eligibleWeekdays).toEqual([
+        'monday',
+        'tuesday',
+        'wednesday',
+        'thursday',
+        'friday',
+      ]);
+    }
+  });
+
+  it('matches the agreed Gym and No-gym schedules', () => {
+    const timetables = loadBundledTimetables();
+    const gym = timetables.find((timetable) => timetable.id === 'weekday-gym');
+    const noGym = timetables.find((timetable) => timetable.id === 'weekday-no-gym');
+    const rows = (items: NonNullable<typeof gym>['items']) =>
+      items.map((item) => `${item.plannedStart}-${item.plannedEnd} ${item.label}`);
+
+    expect(gym && rows(gym.items)).toEqual([
+      '05:30-05:45 Brush, hydrate and change',
+      '05:45-07:00 Gym',
+      '07:00-08:45 Chores, preparation and shower',
+      '08:45-09:00 Pooja',
+      '09:00-09:35 Breakfast',
+      '09:35-10:35 Commute',
+      '10:35-13:00 Work',
+      '13:00-13:45 Lunch',
+      '13:45-17:30 Work',
+      '17:30-18:45 Commute home',
+      '18:45-19:00 Decompress, wash and change',
+      '19:00-19:15 Evening Pooja',
+      '19:15-20:00 Free time or optional work',
+      '20:00-20:45 Dinner',
+      '20:45-21:00 Dishwasher loading',
+      '21:00-21:30 Brush and wind down',
+      '21:30-05:30 Sleep',
+    ]);
+    expect(noGym && rows(noGym.items)).toEqual([
+      '05:30-05:45 Brush, hydrate and change',
+      '05:45-06:00 Pooja',
+      '06:00-07:00 Chores, preparation and shower',
+      '07:00-08:00 Work from home',
+      '08:00-08:30 Breakfast',
+      '08:30-09:30 Commute',
+      '09:30-13:00 Work',
+      '13:00-13:45 Lunch',
+      '13:45-17:30 Work',
+      '17:30-18:45 Commute home',
+      '18:45-19:00 Decompress, wash and change',
+      '19:00-19:15 Evening Pooja',
+      '19:15-20:00 Free time or optional work',
+      '20:00-20:45 Dinner',
+      '20:45-21:00 Dishwasher loading',
+      '21:00-21:30 Brush and wind down',
+      '21:30-05:30 Sleep',
+    ]);
   });
 });

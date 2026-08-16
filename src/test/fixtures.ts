@@ -7,6 +7,7 @@ export const simpleTimetable: Timetable = parseTimetable({
   name: 'Test plan',
   version: 1,
   timezone: 'Asia/Kolkata',
+  eligibleWeekdays: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday'],
   items: [
     { id: 'wake', label: 'Wake', plannedStart: '06:00', plannedEnd: '06:30' },
     { id: 'gym', label: 'Gym', plannedStart: '06:30', plannedEnd: '07:30' },
@@ -20,6 +21,7 @@ export const simpleTimetableV2: Timetable = parseTimetable({
   name: 'Test plan',
   version: 2,
   timezone: 'Asia/Kolkata',
+  eligibleWeekdays: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday'],
   items: [
     { id: 'wake', label: 'Wake up', plannedStart: '06:00', plannedEnd: '06:20' },
     { id: 'gym', label: 'Gym', plannedStart: '06:20', plannedEnd: '07:30' },
@@ -33,6 +35,7 @@ export const overnightTimetable: Timetable = parseTimetable({
   name: 'Overnight',
   version: 1,
   timezone: 'Asia/Kolkata',
+  eligibleWeekdays: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday'],
   items: [
     { id: 'wind-down', label: 'Wind down', plannedStart: '23:30', plannedEnd: '00:15' },
     { id: 'sleep-prep', label: 'Sleep prep', plannedStart: '00:15', plannedEnd: '00:45' },

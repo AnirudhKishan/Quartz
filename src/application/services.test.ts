@@ -118,4 +118,24 @@ describe('an active run survives being reopened', () => {
       state.currentItemStartedAt?.toISOString(),
     );
   });
+
+  describe('whole-day skip reporting', () => {
+    it('retains the run while excluding it from every report entry point', async () => {
+      const repository = new InMemoryRepository(sequentialIdGenerator());
+      const clock = clockFrom(DAY_START);
+      const services = createServices(repository, clock);
+      await repository.saveTimetable(simpleTimetable);
+
+      const state = await services.runs.startRun({ timetableId: 'test-plan', version: 1 });
+      clock.advance(20);
+      await services.runs.skipDay(simpleTimetable.timezone, state);
+
+      expect((await repository.getRun(state.run.id))?.status).toBe('skipped');
+      expect(await services.reports.listCompletedRuns()).toEqual([]);
+      expect(await services.reports.listMeasuredTimetables()).toEqual([]);
+      await expect(services.reports.loadRunReport(state.run.id)).rejects.toThrow(
+        /excluded from analysis/,
+      );
+    });
+  });
 });

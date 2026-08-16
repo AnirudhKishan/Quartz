@@ -22,8 +22,10 @@ import {
   type PlannedWrite,
 } from '../domain/transitions';
 import type {
+  DayDecision,
   Run,
   RunEvent,
+  SkipDayCommand,
   Timetable,
   TimetableRef,
   TimetableSummary,
@@ -31,11 +33,12 @@ import type {
 } from '../domain/types';
 
 export const DB_NAME = 'quartz';
-export const DB_VERSION = 1;
+export const DB_VERSION = 2;
 
 const TIMETABLES = 'timetables';
 const RUNS = 'runs';
 const EVENTS = 'events';
+const DAY_DECISIONS = 'dayDecisions';
 
 const storageError = (cause?: unknown): QuartzError =>
   new QuartzError(
@@ -63,7 +66,23 @@ const asRun = (raw: unknown): Run | null => {
       record.completedAt === null || record.completedAt === undefined
         ? null
         : new Date(record.completedAt as string | number | Date),
-    status: record.status === 'completed' ? 'completed' : 'active',
+    status:
+      record.status === 'completed'
+        ? 'completed'
+        : record.status === 'skipped'
+          ? 'skipped'
+          : 'active',
+  };
+};
+
+const asDayDecision = (raw: unknown): DayDecision | null => {
+  if (!raw || typeof raw !== 'object') return null;
+  const record = raw as Record<string, unknown>;
+  return {
+    timezone: String(record.timezone),
+    localDate: String(record.localDate),
+    status: 'skipped',
+    occurredAt: new Date(record.occurredAt as string | number | Date),
   };
 };
 
@@ -121,18 +140,14 @@ export class IndexedDbRepository implements TimetableRepository {
 
       openRequest.onupgradeneeded = () => {
         const db = openRequest.result;
-        if (!db.objectStoreNames.contains(TIMETABLES)) {
-          db.createObjectStore(TIMETABLES, { keyPath: ['id', 'version'] });
-        }
-        if (!db.objectStoreNames.contains(RUNS)) {
-          const runs = db.createObjectStore(RUNS, { keyPath: 'id' });
-          runs.createIndex('status', 'status', { unique: false });
-          runs.createIndex('startedAt', 'startedAt', { unique: false });
-        }
-        if (!db.objectStoreNames.contains(EVENTS)) {
-          const events = db.createObjectStore(EVENTS, { keyPath: 'id' });
-          events.createIndex('runId', 'runId', { unique: false });
-        }
+        for (const name of Array.from(db.objectStoreNames)) db.deleteObjectStore(name);
+        db.createObjectStore(TIMETABLES, { keyPath: ['id', 'version'] });
+        const runs = db.createObjectStore(RUNS, { keyPath: 'id' });
+        runs.createIndex('status', 'status', { unique: false });
+        runs.createIndex('startedAt', 'startedAt', { unique: false });
+        const events = db.createObjectStore(EVENTS, { keyPath: 'id' });
+        events.createIndex('runId', 'runId', { unique: false });
+        db.createObjectStore(DAY_DECISIONS, { keyPath: ['timezone', 'localDate'] });
       };
       openRequest.onsuccess = () => {
         const db = openRequest.result;
@@ -225,7 +240,7 @@ export class IndexedDbRepository implements TimetableRepository {
   async createRun(ref: TimetableRef, occurredAt: Date): Promise<Run> {
     const db = await this.database();
     return new Promise<Run>((resolve, reject) => {
-      const tx = db.transaction([TIMETABLES, RUNS, EVENTS], 'readwrite');
+      const tx = db.transaction([TIMETABLES, RUNS, EVENTS, DAY_DECISIONS], 'readwrite');
       let failure: unknown = null;
       let created: Run | null = null;
 
@@ -261,17 +276,55 @@ export class IndexedDbRepository implements TimetableRepository {
             tx.abort();
             return;
           }
-          try {
-            const runId = this.ids.newRunId(getLocalDate(occurredAt, timetable.timezone));
-            const plan = planStartRun(timetable, runId, occurredAt);
-            runStore.add(plan.run);
-            const eventStore = tx.objectStore(EVENTS);
-            for (const event of plan.events) eventStore.add(event);
-            created = plan.run;
-          } catch (error) {
-            failure = error;
-            tx.abort();
-          }
+          const localDate = getLocalDate(occurredAt, timetable.timezone);
+          const decisionRequest = tx
+            .objectStore(DAY_DECISIONS)
+            .get([timetable.timezone, localDate]);
+          decisionRequest.onsuccess = () => {
+            if (decisionRequest.result) {
+              failure = new QuartzError(
+                'day-skipped',
+                'Tracking has been skipped for this day.',
+              );
+              tx.abort();
+              return;
+            }
+            const runsRequest = runStore.getAll();
+            runsRequest.onsuccess = () => {
+              const timetablesRequest = tx.objectStore(TIMETABLES).getAll();
+              timetablesRequest.onsuccess = () => {
+                const timetables = timetablesRequest.result as Timetable[];
+                const skipped = (runsRequest.result as unknown[]).map(asRun).some((run) => {
+                  if (run?.status !== 'skipped' || run.localDate !== localDate) return false;
+                  return timetables.some(
+                    (stored) =>
+                      stored.id === run.timetableId &&
+                      stored.version === run.timetableVersion &&
+                      stored.timezone === timetable.timezone,
+                  );
+                });
+                if (skipped) {
+                  failure = new QuartzError(
+                    'day-skipped',
+                    'Tracking has been skipped for this day.',
+                  );
+                  tx.abort();
+                  return;
+                }
+                try {
+                  const runId = this.ids.newRunId(localDate);
+                  const plan = planStartRun(timetable, runId, occurredAt);
+                  runStore.add(plan.run);
+                  const eventStore = tx.objectStore(EVENTS);
+                  for (const event of plan.events) eventStore.add(event);
+                  created = plan.run;
+                } catch (error) {
+                  failure = error;
+                  tx.abort();
+                }
+              };
+            };
+          };
         };
       };
     });
@@ -289,6 +342,130 @@ export class IndexedDbRepository implements TimetableRepository {
       request(tx.objectStore(RUNS).get(runId)),
     );
     return asRun(row);
+  }
+
+  async getDayDecision(timezone: string, localDate: string): Promise<DayDecision | null> {
+    return this.readTransaction([DAY_DECISIONS, RUNS, TIMETABLES], async (tx) => {
+      const [row, runRows, timetableRows] = await Promise.all([
+        request(tx.objectStore(DAY_DECISIONS).get([timezone, localDate])),
+        request(tx.objectStore(RUNS).getAll()),
+        request(tx.objectStore(TIMETABLES).getAll()),
+      ]);
+      const stored = asDayDecision(row);
+      if (stored) return stored;
+      const timetables = timetableRows as Timetable[];
+      const skipped = (runRows as unknown[])
+        .map(asRun)
+        .find((run) => {
+          if (run?.status !== 'skipped' || run.localDate !== localDate) return false;
+          return timetables.some(
+            (timetable) =>
+              timetable.id === run.timetableId &&
+              timetable.version === run.timetableVersion &&
+              timetable.timezone === timezone,
+          );
+        });
+      return skipped?.completedAt
+        ? {
+            timezone,
+            localDate,
+            status: 'skipped',
+            occurredAt: skipped.completedAt,
+          }
+        : null;
+    });
+  }
+
+  async skipDay(command: SkipDayCommand): Promise<DayDecision> {
+    const db = await this.database();
+    const decision: DayDecision = {
+      timezone: command.timezone,
+      localDate: command.localDate,
+      status: 'skipped',
+      occurredAt: command.occurredAt,
+    };
+
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction([TIMETABLES, RUNS, DAY_DECISIONS], 'readwrite');
+      let failure: unknown = null;
+      tx.oncomplete = () => resolve(decision);
+      tx.onabort = () => reject(failure ?? storageError(tx.error));
+      tx.onerror = () => reject(failure ?? storageError(tx.error));
+
+      const runStore = tx.objectStore(RUNS);
+      const activeRequest = runStore.index('status').get('active');
+      activeRequest.onsuccess = () => {
+        const active = asRun(activeRequest.result);
+        if (!active) {
+          if (command.activeRunId !== null) {
+            failure = new QuartzError('no-active-run', 'There is no active day to skip.');
+            tx.abort();
+            return;
+          }
+          const runsRequest = runStore.getAll();
+          runsRequest.onsuccess = () => {
+            const timetablesRequest = tx.objectStore(TIMETABLES).getAll();
+            timetablesRequest.onsuccess = () => {
+              const timetables = timetablesRequest.result as Timetable[];
+              for (const run of (runsRequest.result as unknown[]).map(asRun)) {
+                if (
+                  run?.status !== 'completed' ||
+                  run.localDate !== command.localDate ||
+                  !timetables.some(
+                    (timetable) =>
+                      timetable.id === run.timetableId &&
+                      timetable.version === run.timetableVersion &&
+                      timetable.timezone === command.timezone,
+                  )
+                ) {
+                  continue;
+                }
+                runStore.put({
+                  ...run,
+                  status: 'skipped',
+                  completedAt: command.occurredAt,
+                });
+              }
+              tx.objectStore(DAY_DECISIONS).put(decision);
+            };
+          };
+          return;
+        }
+        if (command.activeRunId !== active.id) {
+          failure = new QuartzError(
+            'stale-state',
+            'The active day changed before it could be skipped.',
+          );
+          tx.abort();
+          return;
+        }
+
+        const timetableRequest = tx
+          .objectStore(TIMETABLES)
+          .get([active.timetableId, active.timetableVersion]);
+        timetableRequest.onsuccess = () => {
+          const timetable = timetableRequest.result as Timetable | undefined;
+          if (
+            !timetable ||
+            timetable.timezone !== command.timezone ||
+            active.localDate !== command.localDate
+          ) {
+            failure = new QuartzError(
+              'stale-state',
+              'The active run belongs to a different local day.',
+            );
+            tx.abort();
+            return;
+          }
+          runStore.put({
+            ...active,
+            status: 'skipped',
+            completedAt: command.occurredAt,
+          });
+          tx.objectStore(DAY_DECISIONS).put(decision);
+        };
+      };
+    });
   }
 
   async completeRun(runId: string, occurredAt: Date): Promise<void> {
@@ -434,7 +611,7 @@ export class IndexedDbRepository implements TimetableRepository {
   async replaceAll(data: BackupData): Promise<void> {
     const db = await this.database();
     return new Promise((resolve, reject) => {
-      const tx = db.transaction([TIMETABLES, RUNS, EVENTS], 'readwrite');
+      const tx = db.transaction([TIMETABLES, RUNS, EVENTS, DAY_DECISIONS], 'readwrite');
       tx.oncomplete = () => resolve();
       tx.onabort = () => reject(storageError(tx.error));
       tx.onerror = () => reject(storageError(tx.error));
@@ -442,10 +619,12 @@ export class IndexedDbRepository implements TimetableRepository {
       const timetables = tx.objectStore(TIMETABLES);
       const runs = tx.objectStore(RUNS);
       const events = tx.objectStore(EVENTS);
+      const dayDecisions = tx.objectStore(DAY_DECISIONS);
 
       timetables.clear();
       runs.clear();
       events.clear();
+      dayDecisions.clear();
 
       for (const timetable of data.timetables) timetables.put(timetable);
       for (const run of data.runs) runs.put(run);

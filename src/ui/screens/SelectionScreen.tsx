@@ -1,27 +1,47 @@
+import { useState } from 'react';
+
 import { getLocalDate } from '../../domain/time';
-import type { TimetableSummary } from '../../domain/types';
+import { isTimetableEligible } from '../../domain/timetable';
+import type { Timetable } from '../../domain/types';
 import { formatLocalDate } from '../format';
 import { navigate } from '../router';
 import { useApp } from '../store';
-import { useAsync } from '../useAsync';
-import { EmptyState, ErrorNote, Loading, Screen } from '../components/Screen';
+import { EmptyState, Screen } from '../components/Screen';
 
-const byNameThenNewest = (a: TimetableSummary, b: TimetableSummary): number =>
-  a.name.localeCompare(b.name) || b.version - a.version;
+const byName = (a: Timetable, b: Timetable): number => a.name.localeCompare(b.name);
 
 export const SelectionScreen = () => {
-  const { services, activeState, busy, startRun, notice, dismissNotice } = useApp();
-  const timetables = useAsync(() => services.repository.listTimetables(), [services]);
+  const {
+    services,
+    timetables,
+    dayDecision,
+    activeState,
+    busy,
+    startRun,
+    skipDay,
+    notice,
+    dismissNotice,
+  } = useApp();
+  const [confirmingSkip, setConfirmingSkip] = useState(false);
+  const now = services.clock.now();
+  const eligible = timetables.filter((timetable) => isTimetableEligible(timetable, now));
+  const timezone = timetables[0]?.timezone;
+  const localDate = timezone ? getLocalDate(now, timezone) : null;
+  const active = activeState?.status === 'active' ? activeState : null;
 
-  const start = async (summary: TimetableSummary) => {
-    await startRun({ timetableId: summary.id, version: summary.version });
+  const start = async (timetable: Timetable) => {
+    await startRun({ timetableId: timetable.id, version: timetable.version });
     navigate({ kind: 'run' });
+  };
+
+  const confirmSkip = async () => {
+    if (await skipDay()) setConfirmingSkip(false);
   };
 
   return (
     <Screen
       title="Quartz"
-      subtitle="Pick the timetable you intend to follow today."
+      subtitle="Pick the plan you intend to follow today."
       footer={
         <nav className="nav">
           <a href="#/reports">Reports</a>
@@ -29,14 +49,14 @@ export const SelectionScreen = () => {
         </nav>
       }
     >
-      {activeState && (
+      {active && (
         <section className="card card--accent">
           <h2 className="card__title">A day is already running</h2>
           <p className="card__meta">
-            {activeState.timetable.name} · {formatLocalDate(activeState.run.localDate)}
+            {active.timetable.name} · {formatLocalDate(active.run.localDate)}
           </p>
           <p className="card__meta">
-            Finish or complete it before starting another day. Only one run can be active.
+            Finish it or skip the day before starting another plan.
           </p>
           <a className="button button--primary" href="#/run">
             Resume day
@@ -53,38 +73,86 @@ export const SelectionScreen = () => {
         </p>
       )}
 
-      {timetables.status === 'loading' && <Loading label="Loading timetables…" />}
-      {timetables.status === 'failed' && <ErrorNote error={timetables.error} />}
-      {timetables.status === 'ready' && timetables.value.length === 0 && (
-        <EmptyState>No timetables are available.</EmptyState>
-      )}
-
-      {timetables.status === 'ready' && (
-        <ul className="list">
-          {[...timetables.value].sort(byNameThenNewest).map((summary) => {
-            const localDate = getLocalDate(services.clock.now(), summary.timezone);
-            return (
-              <li className="card" key={`${summary.id}@${summary.version}`}>
-                <h2 className="card__title">
-                  {summary.name} <span className="badge">v{summary.version}</span>
-                </h2>
+      {dayDecision ? (
+        <section className="card card--accent">
+          <h2 className="card__title">No tracking today</h2>
+          <p className="card__meta">
+            {formatLocalDate(dayDecision.localDate)} was skipped. Its activity is excluded from
+            analysis.
+          </p>
+        </section>
+      ) : eligible.length === 0 && !active ? (
+        <EmptyState>
+          No plan is scheduled for {localDate ? formatLocalDate(localDate) : 'today'}. Quartz will
+          not track this day.
+        </EmptyState>
+      ) : (
+        <>
+          <ul className="list">
+            {[...eligible].sort(byName).map((timetable) => (
+              <li className="card" key={timetable.id}>
+                <h2 className="card__title">{timetable.name}</h2>
                 <p className="card__meta">
-                  {summary.itemCount} steps · {summary.firstPlannedStart}–{summary.lastPlannedEnd} ·{' '}
-                  {summary.timezone}
+                  {timetable.items.length} steps ·{' '}
+                  {timetable.items[0]?.plannedStart ===
+                  timetable.items[timetable.items.length - 1]?.plannedEnd
+                    ? 'full day'
+                    : `${timetable.items[0]?.plannedStart}–${timetable.items[timetable.items.length - 1]?.plannedEnd}`}{' '}
+                  · {timetable.timezone}
                 </p>
-                <p className="card__meta">Day starts {formatLocalDate(localDate)}</p>
+                {localDate && (
+                  <p className="card__meta">Day starts {formatLocalDate(localDate)}</p>
+                )}
                 <button
                   type="button"
                   className="button button--primary"
-                  disabled={busy || activeState !== null}
-                  onClick={() => void start(summary)}
+                  disabled={busy || active !== null}
+                  onClick={() => void start(timetable)}
                 >
                   Start day
                 </button>
               </li>
-            );
-          })}
-        </ul>
+            ))}
+          </ul>
+
+          {!active && (
+            <section className="card">
+              {confirmingSkip ? (
+                <>
+                  <h2 className="card__title">Skip tracking for the whole day?</h2>
+                  <p className="card__meta">
+                    Quartz will record no measurements for today. This cannot be undone.
+                  </p>
+                  <button
+                    type="button"
+                    className="button button--secondary"
+                    disabled={busy}
+                    onClick={() => void confirmSkip()}
+                  >
+                    Confirm skip day
+                  </button>
+                  <button
+                    type="button"
+                    className="button button--ghost"
+                    disabled={busy}
+                    onClick={() => setConfirmingSkip(false)}
+                  >
+                    Cancel
+                  </button>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  className="button button--ghost"
+                  disabled={busy}
+                  onClick={() => setConfirmingSkip(true)}
+                >
+                  Skip day
+                </button>
+              )}
+            </section>
+          )}
+        </>
       )}
     </Screen>
   );

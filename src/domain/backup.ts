@@ -133,8 +133,8 @@ export const parseBackupDocument = (raw: unknown): BackupData => {
       errors.push(`${at}.timetableVersion must be an integer`);
     }
     if (typeof localDate !== 'string') errors.push(`${at}.localDate must be a string`);
-    if (status !== 'active' && status !== 'completed') {
-      errors.push(`${at}.status must be "active" or "completed"`);
+    if (status !== 'active' && status !== 'completed' && status !== 'skipped') {
+      errors.push(`${at}.status must be "active", "completed", or "skipped"`);
     }
 
     const startedAt = parseInstant(entry.startedAt, `${at}.startedAt`, errors);

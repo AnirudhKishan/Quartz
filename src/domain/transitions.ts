@@ -10,6 +10,7 @@
 import { QuartzError } from './errors';
 import { eventId, findUndoTarget, reconstructRunState } from './runState';
 import { getLocalDate } from './time';
+import { isTimetableEligible } from './timetable';
 import type {
   Run,
   RunEvent,
@@ -52,6 +53,9 @@ export const planStartRun = (
   runId: string,
   occurredAt: Date,
 ): StartRunPlan => {
+  if (!isTimetableEligible(timetable, occurredAt)) {
+    throw new QuartzError('ineligible-day', `${timetable.name} is not available on this day.`);
+  }
   const firstItem = timetable.items[0];
   if (!firstItem) {
     throw new QuartzError('invalid-timetable', `Timetable ${timetable.id} has no items`);
@@ -103,8 +107,13 @@ export const planTransition = (
 ): PlannedWrite => {
   const state = reconstructRunState(timetable, run, events);
 
-  if (state.status === 'completed') {
-    throw new QuartzError('run-completed', 'This run has already been completed.');
+  if (state.status !== 'active') {
+    throw new QuartzError(
+      'run-completed',
+      state.status === 'completed'
+        ? 'This run has already been completed.'
+        : 'This run is no longer active.',
+    );
   }
   const { currentItem, currentIndex } = state;
   if (currentItem === null || currentIndex === null) {

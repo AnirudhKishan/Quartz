@@ -7,13 +7,22 @@
  */
 
 import { QuartzError } from './errors';
-import { formatClockTime, isValidTimezone, parseClockTime } from './time';
-import type { Timetable, TimetableItem, TimetableSummary } from './types';
+import { formatClockTime, getLocalWeekday, isValidTimezone, parseClockTime } from './time';
+import type { Timetable, TimetableItem, TimetableSummary, Weekday } from './types';
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
 const ID_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
+const WEEKDAYS = new Set<Weekday>([
+  'monday',
+  'tuesday',
+  'wednesday',
+  'thursday',
+  'friday',
+  'saturday',
+  'sunday',
+]);
 
 const validateItem = (
   raw: unknown,
@@ -81,7 +90,7 @@ export const parseTimetable = (raw: unknown, source = 'timetable'): Timetable =>
     throw new QuartzError('invalid-timetable', `${source} must be a JSON object`);
   }
 
-  const { id, name, version, timezone, items } = raw;
+  const { id, name, version, timezone, eligibleWeekdays, items } = raw;
 
   if (typeof id !== 'string' || !ID_PATTERN.test(id)) {
     errors.push('id must be a lowercase kebab-case string');
@@ -94,6 +103,15 @@ export const parseTimetable = (raw: unknown, source = 'timetable'): Timetable =>
   }
   if (typeof timezone !== 'string' || !isValidTimezone(timezone)) {
     errors.push(`timezone must be a valid IANA timezone, got ${JSON.stringify(timezone)}`);
+  }
+  if (
+    !Array.isArray(eligibleWeekdays) ||
+    eligibleWeekdays.length === 0 ||
+    eligibleWeekdays.some((day) => typeof day !== 'string' || !WEEKDAYS.has(day as Weekday))
+  ) {
+    errors.push('eligibleWeekdays must be a non-empty array of weekday names');
+  } else if (new Set(eligibleWeekdays).size !== eligibleWeekdays.length) {
+    errors.push('eligibleWeekdays must not contain duplicates');
   }
   if (!Array.isArray(items) || items.length === 0) {
     errors.push('items must be a non-empty ordered array');
@@ -117,6 +135,7 @@ export const parseTimetable = (raw: unknown, source = 'timetable'): Timetable =>
     name: (name as string).trim(),
     version: version as number,
     timezone: timezone as string,
+    eligibleWeekdays: eligibleWeekdays as Weekday[],
     items: parsedItems,
   };
 };
@@ -131,6 +150,7 @@ export const toSummary = (timetable: Timetable): TimetableSummary => {
     name: timetable.name,
     version: timetable.version,
     timezone: timetable.timezone,
+    eligibleWeekdays: timetable.eligibleWeekdays,
     itemCount: timetable.items.length,
     firstPlannedStart: first ? first.plannedStart : '00:00',
     lastPlannedEnd: last ? last.plannedEnd : '00:00',
@@ -139,6 +159,9 @@ export const toSummary = (timetable: Timetable): TimetableSummary => {
 
 export const findItemIndex = (timetable: Timetable, itemId: string): number =>
   timetable.items.findIndex((item) => item.id === itemId);
+
+export const isTimetableEligible = (timetable: Timetable, instant: Date): boolean =>
+  timetable.eligibleWeekdays.includes(getLocalWeekday(instant, timetable.timezone));
 
 /**
  * Reject a set of definitions that contains the same `(id, version)` twice.
@@ -165,6 +188,8 @@ export const timetablesEqual = (a: Timetable, b: Timetable): boolean =>
   a.version === b.version &&
   a.name === b.name &&
   a.timezone === b.timezone &&
+  a.eligibleWeekdays.length === b.eligibleWeekdays.length &&
+  a.eligibleWeekdays.every((day, index) => day === b.eligibleWeekdays[index]) &&
   a.items.length === b.items.length &&
   a.items.every((item, index) => {
     const other = b.items[index];

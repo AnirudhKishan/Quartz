@@ -6,7 +6,8 @@ import { useElapsed } from '../useElapsed';
 import { EmptyState, Screen } from '../components/Screen';
 
 export const ActiveRunScreen = () => {
-  const { services, activeState, busy, advance, undo, notice, dismissNotice } = useApp();
+  const { services, activeState, busy, advance, undo, skipDay, notice, dismissNotice } = useApp();
+  const [confirmingSkipDay, setConfirmingSkipDay] = useState(false);
   const elapsed = useElapsed(activeState?.currentItemStartedAt ?? null, services.clock);
 
   if (!activeState) {
@@ -105,6 +106,46 @@ export const ActiveRunScreen = () => {
         </button>
       </section>
 
+      <section className="card">
+        {confirmingSkipDay ? (
+          <>
+            <h3 className="card__title">Stop tracking the whole day?</h3>
+            <p className="card__meta">
+              Everything recorded today will be excluded from analysis. This cannot be undone.
+            </p>
+            <button
+              type="button"
+              className="button button--secondary"
+              disabled={busy}
+              onClick={() => {
+                void skipDay().then((skipped) => {
+                  if (skipped) navigate({ kind: 'select' });
+                });
+              }}
+            >
+              Confirm skip day
+            </button>
+            <button
+              type="button"
+              className="button button--ghost"
+              disabled={busy}
+              onClick={() => setConfirmingSkipDay(false)}
+            >
+              Cancel
+            </button>
+          </>
+        ) : (
+          <button
+            type="button"
+            className="button button--ghost"
+            disabled={busy}
+            onClick={() => setConfirmingSkipDay(true)}
+          >
+            Skip day
+          </button>
+        )}
+      </section>
+
       <section className="up-next">
         <h3 className="up-next__title">Up next</h3>
         {nextItem ? (
@@ -128,3 +169,4 @@ export const ActiveRunScreen = () => {
     </Screen>
   );
 };
+import { useState } from 'react';

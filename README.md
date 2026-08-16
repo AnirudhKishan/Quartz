@@ -7,6 +7,10 @@ It is a measurement tool, not a task manager or a coach. There is no server, no
 account, and no synchronisation: everything runs in the browser and is stored on
 the device.
 
+Quartz ships with two full-day plans: **Gym weekday** and **No-gym weekday**.
+Both are available Monday through Friday in `Asia/Kolkata`; weekends are
+deliberately untracked.
+
 ## Running it
 
 ```bash
@@ -87,6 +91,10 @@ action and shows a recovery screen instead.
 A skipped item has no start deviation, no actual duration, and no duration
 deviation. It contributes zero to the overrun totals, so skipping an item can
 never improve its score. It is counted and reported separately as a skip.
+
+Skipping the whole day is a separate, confirmed action available before starting
+or while a day is running. It stops tracking for that local date and excludes the
+entire run from reports, including events recorded before the skip.
 
 ## Measurements
 

@@ -1,13 +1,20 @@
 import { describe, expect, it } from 'vitest';
 
 import { QuartzError } from './errors';
-import { parseTimetable, assertUniqueVersions, timetablesEqual, toSummary } from './timetable';
+import {
+  parseTimetable,
+  assertUniqueVersions,
+  isTimetableEligible,
+  timetablesEqual,
+  toSummary,
+} from './timetable';
 
 const valid = {
   id: 'weekday-gym',
   name: 'Gym weekday',
   version: 1,
   timezone: 'Asia/Kolkata',
+  eligibleWeekdays: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday'],
   items: [
     { id: 'wake', label: 'Wake', plannedStart: '05:30', plannedEnd: '05:45' },
     { id: 'gym', label: 'Gym', plannedStart: '05:45', plannedEnd: '07:00' },
@@ -43,6 +50,20 @@ describe('parseTimetable', () => {
     expect(detailsOf(() => parseTimetable({ ...valid, timezone: 'Mars/Olympus' }))).toContain(
       'timezone must be a valid IANA timezone, got "Mars/Olympus"',
     );
+  });
+
+  it('rejects missing, unknown, or duplicate eligible weekdays', () => {
+    expect(detailsOf(() => parseTimetable({ ...valid, eligibleWeekdays: [] }))).toContain(
+      'eligibleWeekdays must be a non-empty array of weekday names',
+    );
+    expect(detailsOf(() => parseTimetable({ ...valid, eligibleWeekdays: ['funday'] }))).toContain(
+      'eligibleWeekdays must be a non-empty array of weekday names',
+    );
+    expect(
+      detailsOf(() =>
+        parseTimetable({ ...valid, eligibleWeekdays: ['monday', 'monday'] }),
+      ),
+    ).toContain('eligibleWeekdays must not contain duplicates');
   });
 
   it('rejects an empty item list', () => {
@@ -121,6 +142,15 @@ describe('toSummary', () => {
       itemCount: 2,
       firstPlannedStart: '05:30',
       lastPlannedEnd: '07:00',
+      eligibleWeekdays: valid.eligibleWeekdays,
     });
+  });
+});
+
+describe('isTimetableEligible', () => {
+  it('uses the timetable timezone to distinguish weekdays from weekends', () => {
+    const timetable = parseTimetable(valid);
+    expect(isTimetableEligible(timetable, new Date('2026-03-02T00:00:00.000Z'))).toBe(true);
+    expect(isTimetableEligible(timetable, new Date('2026-03-07T00:00:00.000Z'))).toBe(false);
   });
 });

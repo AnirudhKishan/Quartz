@@ -60,11 +60,11 @@ afterEach(() => {
 });
 
 describe('selection screen', () => {
-  it('lists the available timetable with its version and starts a day', async () => {
+  it('lists the available plan without exposing its internal version and starts a day', async () => {
     setup();
 
-    const card = await screen.findByRole('heading', { name: /Test plan/ });
-    expect(card).toHaveTextContent('v1');
+    await screen.findByRole('heading', { name: 'Test plan' });
+    expect(screen.queryByText('v1')).not.toBeInTheDocument();
 
     await user().click(screen.getByRole('button', { name: 'Start day' }));
 
@@ -79,6 +79,26 @@ describe('selection screen', () => {
     window.location.hash = '#/';
     expect(await screen.findByRole('heading', { name: 'A day is already running' })).toBeVisible();
     expect(screen.getByRole('button', { name: 'Start day' })).toBeDisabled();
+  });
+
+  it('offers no tracking controls when no plan is eligible on the weekend', async () => {
+    setup({ clock: movableClock('2026-03-07T00:30:00.000Z') });
+
+    expect(await screen.findByText(/No plan is scheduled/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Start day' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Skip day' })).not.toBeInTheDocument();
+  });
+
+  it('confirms a whole-day skip before tracking starts', async () => {
+    const { repository } = setup();
+
+    await user().click(await screen.findByRole('button', { name: 'Skip day' }));
+    expect(screen.getByRole('heading', { name: 'Skip tracking for the whole day?' })).toBeVisible();
+    await user().click(screen.getByRole('button', { name: 'Confirm skip day' }));
+
+    expect(await screen.findByRole('heading', { name: 'No tracking today' })).toBeVisible();
+    expect(await repository.getDayDecision('Asia/Kolkata', '2026-03-02')).not.toBeNull();
+    expect(await repository.listRuns()).toEqual([]);
   });
 });
 
@@ -137,6 +157,26 @@ describe('active run screen', () => {
 
     expect(await screen.findByRole('heading', { name: 'Gym' })).toBeInTheDocument();
     expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
+  });
+
+  it('confirms skipping an active day and excludes its retained history', async () => {
+    const { clock, repository } = await startDay();
+    const run = await repository.getActiveRun();
+    if (!run) throw new Error('expected active run');
+
+    clock.advanceMinutes(30);
+    await user().click(screen.getByRole('button', { name: 'Next' }));
+    await screen.findByRole('heading', { name: 'Gym' });
+    const eventsBeforeSkip = await repository.getRunEvents(run.id);
+
+    await user().click(screen.getByRole('button', { name: 'Skip day' }));
+    expect(screen.getByRole('heading', { name: 'Stop tracking the whole day?' })).toBeVisible();
+    await user().click(screen.getByRole('button', { name: 'Confirm skip day' }));
+
+    expect(await screen.findByRole('heading', { name: 'No tracking today' })).toBeVisible();
+    expect((await repository.getRun(run.id))?.status).toBe('skipped');
+    expect(await repository.getRunEvents(run.id)).toEqual(eventsBeforeSkip);
+    expect(await repository.listCompletedRuns()).toEqual([]);
   });
 
   it('completes the day on the final step and offers the report', async () => {
