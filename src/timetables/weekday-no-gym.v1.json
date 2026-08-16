@@ -1,0 +1,38 @@
+{
+  "id": "weekday-no-gym",
+  "name": "Non-gym weekday",
+  "version": 1,
+  "timezone": "Asia/Kolkata",
+  "items": [
+    {
+      "id": "wake-and-prepare",
+      "label": "Brush, hydrate and change",
+      "plannedStart": "06:30",
+      "plannedEnd": "06:45"
+    },
+    {
+      "id": "shower-and-dress",
+      "label": "Shower and dress",
+      "plannedStart": "06:45",
+      "plannedEnd": "07:10"
+    },
+    {
+      "id": "breakfast",
+      "label": "Breakfast",
+      "plannedStart": "07:10",
+      "plannedEnd": "07:35"
+    },
+    {
+      "id": "commute",
+      "label": "Commute",
+      "plannedStart": "07:35",
+      "plannedEnd": "08:15"
+    },
+    {
+      "id": "deep-work-block",
+      "label": "First deep work block",
+      "plannedStart": "08:15",
+      "plannedEnd": "11:00"
+    }
+  ]
+}

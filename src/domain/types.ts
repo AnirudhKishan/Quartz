@@ -1,0 +1,113 @@
+/**
+ * Domain model for Quartz.
+ *
+ * The plan (timetables) and reality (runs + events) are deliberately separate.
+ * Nothing here may import React or IndexedDB.
+ */
+
+/** A single planned activity inside a timetable. */
+export interface TimetableItem {
+  /** Stable across versions while the activity keeps the same meaning. */
+  readonly id: string;
+  readonly label: string;
+  /** Planned local start, `HH:mm` in the timetable's timezone. */
+  readonly plannedStart: string;
+  /** Planned local end, `HH:mm` in the timetable's timezone. */
+  readonly plannedEnd: string;
+}
+
+/** An immutable, versioned plan. Never mutate a version that a run has used. */
+export interface Timetable {
+  readonly id: string;
+  readonly name: string;
+  readonly version: number;
+  /** IANA timezone, e.g. `Asia/Kolkata`. */
+  readonly timezone: string;
+  readonly items: readonly TimetableItem[];
+}
+
+export interface TimetableSummary {
+  readonly id: string;
+  readonly name: string;
+  readonly version: number;
+  readonly timezone: string;
+  readonly itemCount: number;
+  readonly firstPlannedStart: string;
+  readonly lastPlannedEnd: string;
+}
+
+export interface TimetableRef {
+  readonly timetableId: string;
+  readonly version: number;
+}
+
+export type RunStatus = 'active' | 'completed';
+
+export interface Run {
+  readonly id: string;
+  readonly timetableId: string;
+  readonly timetableVersion: number;
+  /** Intended local day, `YYYY-MM-DD` in the timetable's timezone. */
+  readonly localDate: string;
+  readonly startedAt: Date;
+  readonly completedAt: Date | null;
+  readonly status: RunStatus;
+}
+
+export type RunEventType = 'started' | 'completed' | 'skipped' | 'undo';
+
+/**
+ * An append-only record of something that actually happened.
+ *
+ * `transitionId` groups every event produced by a single button press. It is an
+ * internal addition to the specification's event shape: it makes Undo
+ * unambiguous without ever rewriting historical timestamps.
+ */
+export interface RunEvent {
+  /** Unique and monotonically sortable within a run. */
+  readonly id: string;
+  readonly runId: string;
+  readonly itemId: string;
+  readonly type: RunEventType;
+  readonly occurredAt: Date;
+  /** For `undo` events, the terminal event whose transition is reversed. */
+  readonly reversesEventId: string | null;
+  readonly transitionId: string;
+  /** Monotonic ordering position within the run, starting at 1. */
+  readonly seq: number;
+}
+
+export type TransitionKind = 'next' | 'skip';
+
+/**
+ * A guarded request to advance a run.
+ *
+ * `expectedItemId` and `expectedSeq` are optimistic-concurrency preconditions.
+ * They are re-checked inside the storage transaction so a repeated tap, a stale
+ * tab, or a duplicated submission cannot advance the run twice.
+ */
+export interface TransitionCommand {
+  readonly runId: string;
+  readonly kind: TransitionKind;
+  readonly occurredAt: Date;
+  readonly expectedItemId: string;
+  readonly expectedSeq: number;
+}
+
+/** Everything needed to render the active run screen. */
+export interface RunState {
+  readonly run: Run;
+  readonly timetable: Timetable;
+  readonly events: readonly RunEvent[];
+  /** Events that still count, i.e. not reversed by an undo. */
+  readonly effectiveEvents: readonly RunEvent[];
+  readonly status: RunStatus;
+  /** Index into `timetable.items`; null once the run is completed. */
+  readonly currentIndex: number | null;
+  readonly currentItem: TimetableItem | null;
+  readonly currentItemStartedAt: Date | null;
+  readonly nextItem: TimetableItem | null;
+  readonly canUndo: boolean;
+  /** Highest `seq` present, used as the transition precondition. */
+  readonly lastSeq: number;
+}

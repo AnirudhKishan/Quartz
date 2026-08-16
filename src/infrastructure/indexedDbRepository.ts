@@ -1,0 +1,455 @@
+/**
+ * IndexedDB adapter.
+ *
+ * Every state change is a single read-write transaction that reads the run, its
+ * timetable version, and its full event history, runs the pure planner, and then
+ * writes. If anything is rejected the transaction aborts and storage is left
+ * exactly as it was. Event IDs are the primary key, so even a duplicated write
+ * is refused by the store itself.
+ */
+
+import type { TimetableRepository } from '../application/repository';
+import type { BackupData } from '../domain/backup';
+import { systemIdGenerator, type IdGenerator } from '../domain/clock';
+import { QuartzError } from '../domain/errors';
+import { getLocalDate } from '../domain/time';
+import { timetablesEqual, toSummary } from '../domain/timetable';
+import {
+  applyRunPatch,
+  planStartRun,
+  planTransition,
+  planUndo,
+  type PlannedWrite,
+} from '../domain/transitions';
+import type {
+  Run,
+  RunEvent,
+  Timetable,
+  TimetableRef,
+  TimetableSummary,
+  TransitionCommand,
+} from '../domain/types';
+
+export const DB_NAME = 'quartz';
+export const DB_VERSION = 1;
+
+const TIMETABLES = 'timetables';
+const RUNS = 'runs';
+const EVENTS = 'events';
+
+const storageError = (cause?: unknown): QuartzError =>
+  new QuartzError(
+    'storage-unavailable',
+    'Quartz cannot reach the browser database on this device.',
+    cause instanceof Error ? [cause.message] : [],
+  );
+
+const request = <T>(req: IDBRequest<T>): Promise<T> =>
+  new Promise((resolve, reject) => {
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(storageError(req.error));
+  });
+
+const asRun = (raw: unknown): Run | null => {
+  if (!raw || typeof raw !== 'object') return null;
+  const record = raw as Record<string, unknown>;
+  return {
+    id: String(record.id),
+    timetableId: String(record.timetableId),
+    timetableVersion: Number(record.timetableVersion),
+    localDate: String(record.localDate),
+    startedAt: new Date(record.startedAt as string | number | Date),
+    completedAt:
+      record.completedAt === null || record.completedAt === undefined
+        ? null
+        : new Date(record.completedAt as string | number | Date),
+    status: record.status === 'completed' ? 'completed' : 'active',
+  };
+};
+
+const asEvent = (raw: unknown): RunEvent => {
+  const record = raw as Record<string, unknown>;
+  return {
+    id: String(record.id),
+    runId: String(record.runId),
+    itemId: String(record.itemId),
+    type: record.type as RunEvent['type'],
+    occurredAt: new Date(record.occurredAt as string | number | Date),
+    reversesEventId: (record.reversesEventId ?? null) as string | null,
+    transitionId: String(record.transitionId),
+    seq: Number(record.seq),
+  };
+};
+
+export class IndexedDbRepository implements TimetableRepository {
+  private db: IDBDatabase | null = null;
+  private opening: Promise<IDBDatabase> | null = null;
+
+  constructor(
+    private readonly databaseName: string = DB_NAME,
+    private readonly ids: IdGenerator = systemIdGenerator,
+    private readonly factory: IDBFactory | null = typeof indexedDB === 'undefined'
+      ? null
+      : indexedDB,
+  ) {}
+
+  /** Opening early lets the app report a storage failure before offering actions. */
+  async open(): Promise<void> {
+    await this.database();
+  }
+
+  close(): void {
+    this.db?.close();
+    this.db = null;
+    this.opening = null;
+  }
+
+  private database(): Promise<IDBDatabase> {
+    if (this.db) return Promise.resolve(this.db);
+    if (this.opening) return this.opening;
+    const factory = this.factory;
+    if (!factory) return Promise.reject(storageError());
+
+    this.opening = new Promise<IDBDatabase>((resolve, reject) => {
+      let openRequest: IDBOpenDBRequest;
+      try {
+        openRequest = factory.open(this.databaseName, DB_VERSION);
+      } catch (error) {
+        reject(storageError(error));
+        return;
+      }
+
+      openRequest.onupgradeneeded = () => {
+        const db = openRequest.result;
+        if (!db.objectStoreNames.contains(TIMETABLES)) {
+          db.createObjectStore(TIMETABLES, { keyPath: ['id', 'version'] });
+        }
+        if (!db.objectStoreNames.contains(RUNS)) {
+          const runs = db.createObjectStore(RUNS, { keyPath: 'id' });
+          runs.createIndex('status', 'status', { unique: false });
+          runs.createIndex('startedAt', 'startedAt', { unique: false });
+        }
+        if (!db.objectStoreNames.contains(EVENTS)) {
+          const events = db.createObjectStore(EVENTS, { keyPath: 'id' });
+          events.createIndex('runId', 'runId', { unique: false });
+        }
+      };
+      openRequest.onsuccess = () => {
+        const db = openRequest.result;
+        db.onversionchange = () => this.close();
+        this.db = db;
+        resolve(db);
+      };
+      openRequest.onerror = () => reject(storageError(openRequest.error));
+      openRequest.onblocked = () => reject(storageError(new Error('Database upgrade is blocked.')));
+    }).catch((error) => {
+      this.opening = null;
+      throw error;
+    });
+
+    return this.opening;
+  }
+
+  private async readTransaction<T>(
+    stores: string[],
+    run: (tx: IDBTransaction) => Promise<T>,
+  ): Promise<T> {
+    const db = await this.database();
+    const tx = db.transaction(stores, 'readonly');
+    return run(tx);
+  }
+
+  async listTimetables(): Promise<TimetableSummary[]> {
+    const rows = await this.readTransaction([TIMETABLES], (tx) =>
+      request(tx.objectStore(TIMETABLES).getAll()),
+    );
+    return (rows as Timetable[])
+      .map(toSummary)
+      .sort((a, b) => a.name.localeCompare(b.name) || a.version - b.version);
+  }
+
+  async getTimetable(id: string, version: number): Promise<Timetable> {
+    const row = await this.readTransaction([TIMETABLES], (tx) =>
+      request(tx.objectStore(TIMETABLES).get([id, version])),
+    );
+    if (!row) throw new QuartzError('not-found', `Timetable ${id}@${version} is not available.`);
+    return row as Timetable;
+  }
+
+  async saveTimetable(timetable: Timetable): Promise<void> {
+    const db = await this.database();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction([TIMETABLES, RUNS], 'readwrite');
+      let failure: unknown = null;
+
+      tx.oncomplete = () => resolve();
+      tx.onabort = () => reject(failure ?? storageError(tx.error));
+      tx.onerror = () => reject(failure ?? storageError(tx.error));
+
+      const store = tx.objectStore(TIMETABLES);
+      const existingRequest = store.get([timetable.id, timetable.version]);
+      existingRequest.onsuccess = () => {
+        const existing = existingRequest.result as Timetable | undefined;
+        if (!existing) {
+          store.put(timetable);
+          return;
+        }
+        if (timetablesEqual(existing, timetable)) return;
+
+        // A version that a run has used is frozen: change means a new version.
+        const runsRequest = tx.objectStore(RUNS).getAll();
+        runsRequest.onsuccess = () => {
+          const used = (runsRequest.result as unknown[])
+            .map(asRun)
+            .some(
+              (run) =>
+                run !== null &&
+                run.timetableId === timetable.id &&
+                run.timetableVersion === timetable.version,
+            );
+          if (used) {
+            failure = new QuartzError(
+              'invalid-timetable',
+              `Timetable ${timetable.id}@${timetable.version} has already been used by a run ` +
+                'and cannot be changed. Publish a new version instead.',
+            );
+            tx.abort();
+            return;
+          }
+          store.put(timetable);
+        };
+      };
+    });
+  }
+
+  async createRun(ref: TimetableRef, occurredAt: Date): Promise<Run> {
+    const db = await this.database();
+    return new Promise<Run>((resolve, reject) => {
+      const tx = db.transaction([TIMETABLES, RUNS, EVENTS], 'readwrite');
+      let failure: unknown = null;
+      let created: Run | null = null;
+
+      tx.oncomplete = () => {
+        if (created) resolve(created);
+        else reject(failure ?? storageError());
+      };
+      tx.onabort = () => reject(failure ?? storageError(tx.error));
+      tx.onerror = () => reject(failure ?? storageError(tx.error));
+
+      const runStore = tx.objectStore(RUNS);
+      const activeRequest = runStore.index('status').get('active');
+      activeRequest.onsuccess = () => {
+        if (activeRequest.result) {
+          failure = new QuartzError(
+            'run-already-active',
+            'A day is already in progress. Finish or undo it before starting another.',
+          );
+          tx.abort();
+          return;
+        }
+
+        const timetableRequest = tx
+          .objectStore(TIMETABLES)
+          .get([ref.timetableId, ref.version]);
+        timetableRequest.onsuccess = () => {
+          const timetable = timetableRequest.result as Timetable | undefined;
+          if (!timetable) {
+            failure = new QuartzError(
+              'not-found',
+              `Timetable ${ref.timetableId}@${ref.version} is not available.`,
+            );
+            tx.abort();
+            return;
+          }
+          try {
+            const runId = this.ids.newRunId(getLocalDate(occurredAt, timetable.timezone));
+            const plan = planStartRun(timetable, runId, occurredAt);
+            runStore.add(plan.run);
+            const eventStore = tx.objectStore(EVENTS);
+            for (const event of plan.events) eventStore.add(event);
+            created = plan.run;
+          } catch (error) {
+            failure = error;
+            tx.abort();
+          }
+        };
+      };
+    });
+  }
+
+  async getActiveRun(): Promise<Run | null> {
+    const row = await this.readTransaction([RUNS], (tx) =>
+      request(tx.objectStore(RUNS).index('status').get('active')),
+    );
+    return asRun(row);
+  }
+
+  async getRun(runId: string): Promise<Run | null> {
+    const row = await this.readTransaction([RUNS], (tx) =>
+      request(tx.objectStore(RUNS).get(runId)),
+    );
+    return asRun(row);
+  }
+
+  async completeRun(runId: string, occurredAt: Date): Promise<void> {
+    const db = await this.database();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction([RUNS], 'readwrite');
+      let failure: unknown = null;
+      tx.oncomplete = () => resolve();
+      tx.onabort = () => reject(failure ?? storageError(tx.error));
+      tx.onerror = () => reject(failure ?? storageError(tx.error));
+
+      const store = tx.objectStore(RUNS);
+      const runRequest = store.get(runId);
+      runRequest.onsuccess = () => {
+        const run = asRun(runRequest.result);
+        if (!run) {
+          failure = new QuartzError('not-found', `Run ${runId} does not exist.`);
+          tx.abort();
+          return;
+        }
+        if (run.status === 'completed') return;
+        store.put({ ...run, status: 'completed', completedAt: occurredAt });
+      };
+    });
+  }
+
+  /**
+   * Shared write path for Next, Skip, and Undo.
+   *
+   * The planner runs synchronously inside the transaction between the last read
+   * and the first write, so no other tab or tap can interleave.
+   */
+  private mutateRun(
+    runId: string,
+    plan: (timetable: Timetable, run: Run, events: RunEvent[]) => PlannedWrite,
+  ): Promise<void> {
+    return this.database().then(
+      (db) =>
+        new Promise<void>((resolve, reject) => {
+          const tx = db.transaction([TIMETABLES, RUNS, EVENTS], 'readwrite');
+          let failure: unknown = null;
+
+          tx.oncomplete = () => (failure ? reject(failure) : resolve());
+          tx.onabort = () => reject(failure ?? storageError(tx.error));
+          tx.onerror = () => reject(failure ?? storageError(tx.error));
+
+          const runStore = tx.objectStore(RUNS);
+          const eventStore = tx.objectStore(EVENTS);
+
+          const runRequest = runStore.get(runId);
+          runRequest.onsuccess = () => {
+            const run = asRun(runRequest.result);
+            if (!run) {
+              failure = new QuartzError('not-found', `Run ${runId} does not exist.`);
+              tx.abort();
+              return;
+            }
+
+            const timetableRequest = tx
+              .objectStore(TIMETABLES)
+              .get([run.timetableId, run.timetableVersion]);
+            timetableRequest.onsuccess = () => {
+              const timetable = timetableRequest.result as Timetable | undefined;
+              if (!timetable) {
+                failure = new QuartzError(
+                  'corrupt-history',
+                  `Run ${runId} was measured against ${run.timetableId}@${run.timetableVersion}, ` +
+                    'which is no longer stored.',
+                );
+                tx.abort();
+                return;
+              }
+
+              const eventsRequest = eventStore.index('runId').getAll(runId);
+              eventsRequest.onsuccess = () => {
+                try {
+                  const events = (eventsRequest.result as unknown[])
+                    .map(asEvent)
+                    .sort((a, b) => a.seq - b.seq);
+                  const planned = plan(timetable, run, events);
+                  for (const event of planned.events) eventStore.add(event);
+                  if (planned.runPatch) runStore.put(applyRunPatch(run, planned.runPatch));
+                } catch (error) {
+                  failure = error;
+                  tx.abort();
+                }
+              };
+            };
+          };
+        }),
+    );
+  }
+
+  appendTransition(command: TransitionCommand): Promise<void> {
+    return this.mutateRun(command.runId, (timetable, run, events) =>
+      planTransition(timetable, run, events, command),
+    );
+  }
+
+  undoLastTransition(runId: string, occurredAt: Date): Promise<void> {
+    return this.mutateRun(runId, (timetable, run, events) =>
+      planUndo(timetable, run, events, occurredAt),
+    );
+  }
+
+  async getRunEvents(runId: string): Promise<RunEvent[]> {
+    const rows = await this.readTransaction([EVENTS], (tx) =>
+      request(tx.objectStore(EVENTS).index('runId').getAll(runId)),
+    );
+    return (rows as unknown[]).map(asEvent).sort((a, b) => a.seq - b.seq);
+  }
+
+  async listRuns(): Promise<Run[]> {
+    const rows = await this.readTransaction([RUNS], (tx) =>
+      request(tx.objectStore(RUNS).getAll()),
+    );
+    return (rows as unknown[])
+      .map(asRun)
+      .filter((run): run is Run => run !== null)
+      .sort((a, b) => b.startedAt.getTime() - a.startedAt.getTime());
+  }
+
+  async listCompletedRuns(): Promise<Run[]> {
+    return (await this.listRuns()).filter((run) => run.status === 'completed');
+  }
+
+  async exportAll(): Promise<BackupData> {
+    const db = await this.database();
+    const tx = db.transaction([TIMETABLES, RUNS, EVENTS], 'readonly');
+    const [timetables, runs, events] = await Promise.all([
+      request(tx.objectStore(TIMETABLES).getAll()),
+      request(tx.objectStore(RUNS).getAll()),
+      request(tx.objectStore(EVENTS).getAll()),
+    ]);
+    return {
+      timetables: timetables as Timetable[],
+      runs: (runs as unknown[]).map(asRun).filter((run): run is Run => run !== null),
+      events: (events as unknown[]).map(asEvent).sort((a, b) => a.id.localeCompare(b.id)),
+    };
+  }
+
+  /** Replaces the whole database in one transaction, or changes nothing at all. */
+  async replaceAll(data: BackupData): Promise<void> {
+    const db = await this.database();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction([TIMETABLES, RUNS, EVENTS], 'readwrite');
+      tx.oncomplete = () => resolve();
+      tx.onabort = () => reject(storageError(tx.error));
+      tx.onerror = () => reject(storageError(tx.error));
+
+      const timetables = tx.objectStore(TIMETABLES);
+      const runs = tx.objectStore(RUNS);
+      const events = tx.objectStore(EVENTS);
+
+      timetables.clear();
+      runs.clear();
+      events.clear();
+
+      for (const timetable of data.timetables) timetables.put(timetable);
+      for (const run of data.runs) runs.put(run);
+      for (const event of data.events) events.put(event);
+    });
+  }
+}
