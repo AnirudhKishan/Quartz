@@ -119,10 +119,10 @@ export interface TransitionCommand {
   readonly expectedSeq: number;
 }
 
-/** A guarded replacement for the shared timestamp of one Next or Skip transition. */
+/** A guarded replacement for the initial start or a shared Next/Skip timestamp. */
 export interface CorrectTransitionTimeCommand {
   readonly runId: string;
-  /** The transition ID is the terminal event ID produced by Next or Skip. */
+  /** The initial started event ID, or the terminal event ID produced by Next or Skip. */
   readonly transitionId: string;
   readonly correctedAt: Date;
   /** Current time when the correction is submitted; prevents future boundaries. */

@@ -37,7 +37,7 @@ export interface TimetableRepository {
 
   /** Applies a guarded Next or Skip as one atomic write. */
   appendTransition(command: TransitionCommand): Promise<void>;
-  /** Atomically replaces both timestamps belonging to an effective transition. */
+  /** Atomically replaces an initial start or both timestamps in an effective transition. */
   correctTransitionTime(command: CorrectTransitionTimeCommand): Promise<void>;
   undoLastTransition(runId: string, occurredAt: Date): Promise<void>;
   getRunEvents(runId: string): Promise<RunEvent[]>;

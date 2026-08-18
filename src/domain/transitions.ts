@@ -9,7 +9,7 @@
 
 import { QuartzError } from './errors';
 import { eventId, findUndoTarget, reconstructRunState } from './runState';
-import { getLocalDate } from './time';
+import { getLocalDate, zonedLocalTimeToUtc } from './time';
 import { isTimetableEligible } from './timetable';
 import type {
   CorrectTransitionTimeCommand,
@@ -24,6 +24,7 @@ import type {
 export interface RunPatch {
   readonly status: Run['status'];
   readonly completedAt: Date | null;
+  readonly startedAt?: Date;
 }
 
 export interface PlannedWrite {
@@ -226,7 +227,7 @@ export const planUndo = (
 };
 
 /**
- * Replace the timestamp shared by one effective Next or Skip transition.
+ * Replace the timestamp of the initial start or a shared Next/Skip transition.
  *
  * Corrections intentionally rewrite the existing records. Event identity and
  * transition grouping stay unchanged, so reconstruction and Undo keep working.
@@ -258,7 +259,7 @@ export const planTransitionTimeCorrection = (
     (event) =>
       event.id === command.transitionId &&
       event.transitionId === command.transitionId &&
-      isTerminalEvent(event),
+      (isTerminalEvent(event) || (event.seq === 1 && event.type === 'started')),
   );
   const target = state.effectiveEvents[targetIndex];
   if (!target) {
@@ -268,14 +269,18 @@ export const planTransitionTimeCorrection = (
     );
   }
 
+  const isInitialStart = target.seq === 1 && target.type === 'started';
   const previous = state.effectiveEvents[targetIndex - 1];
   const nextStarted = state.effectiveEvents[targetIndex + 1];
-  const nextBoundary =
-    nextStarted?.transitionId === target.transitionId
+  const nextBoundary = isInitialStart
+    ? nextStarted
+    : nextStarted?.transitionId === target.transitionId
       ? state.effectiveEvents[targetIndex + 2]
       : nextStarted;
   const correctedMs = command.correctedAt.getTime();
-  const minimumMs = previous?.occurredAt.getTime() ?? run.startedAt.getTime();
+  const minimumMs = isInitialStart
+    ? zonedLocalTimeToUtc(run.localDate, 0, timetable.timezone).getTime()
+    : (previous?.occurredAt.getTime() ?? run.startedAt.getTime());
   const maximumMs = Math.min(
     nextBoundary?.occurredAt.getTime() ?? command.observedAt.getTime(),
     command.observedAt.getTime(),
@@ -300,10 +305,18 @@ export const planTransitionTimeCorrection = (
 
   return {
     events: correctedEvents,
-    runPatch: isFinal ? { status: 'completed', completedAt: command.correctedAt } : null,
+    runPatch: isInitialStart
+      ? {
+          status: run.status,
+          completedAt: run.completedAt,
+          startedAt: command.correctedAt,
+        }
+      : isFinal
+        ? { status: 'completed', completedAt: command.correctedAt }
+        : null,
     state,
   };
 };
 
 export const applyRunPatch = (run: Run, patch: RunPatch | null): Run =>
-  patch === null ? run : { ...run, status: patch.status, completedAt: patch.completedAt };
+  patch === null ? run : { ...run, ...patch };

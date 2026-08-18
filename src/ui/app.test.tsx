@@ -234,6 +234,22 @@ describe('active run screen', () => {
     expect(events[2]?.occurredAt.toISOString()).toBe('2026-03-02T01:00:00.000Z');
   });
 
+  it('corrects the first task start from the timeline', async () => {
+    const { repository } = await startDay();
+
+    await user().click(screen.getByRole('button', { name: /06:00 Edit start/ }));
+    fireEvent.change(screen.getByLabelText('Actual day start time'), {
+      target: { value: '2026-03-02T05:50' },
+    });
+    await user().click(screen.getByRole('button', { name: 'Save correction' }));
+
+    expect(await screen.findByRole('button', { name: /05:50 Edit start/ })).toBeInTheDocument();
+    const run = await repository.getActiveRun();
+    const events = await repository.getRunEvents(run!.id);
+    expect(run?.startedAt.toISOString()).toBe('2026-03-02T00:20:00.000Z');
+    expect(events[0]?.occurredAt.toISOString()).toBe('2026-03-02T00:20:00.000Z');
+  });
+
   it('clears local data from the overflow menu and reseeds a fresh install', async () => {
     const { repository } = await startDay();
     await user().click(screen.getByText('More actions'));

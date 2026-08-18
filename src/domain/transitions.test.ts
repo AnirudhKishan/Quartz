@@ -100,6 +100,19 @@ describe('Undo', () => {
       expect(driver.state.currentItemStartedAt?.toISOString()).toBe('2026-03-02T00:35:00.000Z');
     });
 
+    it('updates the first event and run start together', () => {
+      const driver = new RunDriver(simpleTimetable, START).next(at('2026-03-02T00:50:00.000Z'));
+
+      driver.correct(
+        driver.events[0]!.transitionId,
+        at('2026-03-02T00:10:00.000Z'),
+        at('2026-03-02T01:00:00.000Z'),
+      );
+
+      expect(driver.events[0]?.occurredAt.toISOString()).toBe('2026-03-02T00:10:00.000Z');
+      expect(driver.run.startedAt.toISOString()).toBe('2026-03-02T00:10:00.000Z');
+    });
+
     it('rejects a correction that crosses a neighboring transition', () => {
       const driver = new RunDriver(simpleTimetable, START)
         .next(at('2026-03-02T00:40:00.000Z'))

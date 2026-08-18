@@ -43,6 +43,9 @@ export const DayTimeline = ({
       ),
     [state.effectiveEvents],
   );
+  const initialStart = state.effectiveEvents.find(
+    (event) => event.seq === 1 && event.type === 'started',
+  );
   const markerIndex = report.observations.findIndex((observation, index) => {
     const value = now.getTime();
     const isLast = index === report.observations.length - 1;
@@ -114,6 +117,16 @@ export const DayTimeline = ({
                 <p className="timeline-item__planned">
                   Planned {observation.item.plannedStart}–{observation.item.plannedEnd}
                 </p>
+                {index === 0 && initialStart && onEditTransition && (
+                  <button
+                    type="button"
+                    className="timeline-item__boundary"
+                    onClick={() => onEditTransition(initialStart)}
+                  >
+                    {formatTimeInZone(initialStart.occurredAt, state.timetable.timezone)}
+                    <span>Edit start</span>
+                  </button>
+                )}
                 {observation.actualStart && !observation.skipped && (
                   <>
                     <p className="timeline-item__actual">

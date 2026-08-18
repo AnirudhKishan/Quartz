@@ -51,15 +51,20 @@ export const getTransitionContext = (
     (event) =>
       event.id === transitionId &&
       event.transitionId === transitionId &&
-      (event.type === 'completed' || event.type === 'skipped'),
+      (event.type === 'completed' ||
+        event.type === 'skipped' ||
+        (event.seq === 1 && event.type === 'started')),
   );
   const terminal = state.effectiveEvents[index];
   if (!terminal) return null;
+  const isInitialStart = terminal.seq === 1 && terminal.type === 'started';
 
   const previous = state.effectiveEvents[index - 1];
   const candidateStarted = state.effectiveEvents[index + 1];
   const nextStarted =
-    candidateStarted?.transitionId === transitionId && candidateStarted.type === 'started'
+    !isInitialStart &&
+    candidateStarted?.transitionId === transitionId &&
+    candidateStarted.type === 'started'
       ? candidateStarted
       : null;
   const nextBoundary = nextStarted ? state.effectiveEvents[index + 2] : candidateStarted;
@@ -70,13 +75,19 @@ export const getTransitionContext = (
   return {
     terminal,
     nextStarted,
-    fromLabel:
-      state.timetable.items.find((item) => item.id === terminal.itemId)?.label ?? terminal.itemId,
-    toLabel: nextStarted
-      ? state.timetable.items.find((item) => item.id === nextStarted.itemId)?.label ??
-        nextStarted.itemId
-      : 'Day complete',
-    minimum: previous?.occurredAt ?? state.run.startedAt,
+    fromLabel: isInitialStart
+      ? 'Day start'
+      : state.timetable.items.find((item) => item.id === terminal.itemId)?.label ??
+        terminal.itemId,
+    toLabel: isInitialStart
+      ? state.timetable.items[0]?.label ?? terminal.itemId
+      : nextStarted
+        ? state.timetable.items.find((item) => item.id === nextStarted.itemId)?.label ??
+          nextStarted.itemId
+        : 'Day complete',
+    minimum: isInitialStart
+      ? zonedLocalTimeToUtc(state.run.localDate, 0, state.timetable.timezone)
+      : previous?.occurredAt ?? state.run.startedAt,
     maximum,
   };
 };

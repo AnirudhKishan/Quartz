@@ -34,6 +34,7 @@ export const TransitionTimeDialog = ({
   const [error, setError] = useState<string | null>(null);
 
   if (!context) return null;
+  const isInitialStart = transition.seq === 1 && transition.type === 'started';
   const minimum = toLocalDateTimeValue(new Date(context.minimum.getTime() + 59_999), zone);
   const maximum = toLocalDateTimeValue(context.maximum, zone);
 
@@ -62,13 +63,19 @@ export const TransitionTimeDialog = ({
         aria-modal="true"
         aria-labelledby="correction-title"
       >
-        <h2 id="correction-title">Correct changeover</h2>
+        <h2 id="correction-title">
+          {isInitialStart ? 'Correct day start' : 'Correct changeover'}
+        </h2>
         <p className="modal-sheet__meta">
-          When did <strong>{context.fromLabel}</strong> change to{' '}
-          <strong>{context.toLabel}</strong>?
+          {isInitialStart ? (
+            <>When did <strong>{context.toLabel}</strong> actually start?</>
+          ) : (
+            <>When did <strong>{context.fromLabel}</strong> change to{' '}
+              <strong>{context.toLabel}</strong>?</>
+          )}
         </p>
         <label className="field">
-          <span>Actual changeover time</span>
+          <span>{isInitialStart ? 'Actual day start time' : 'Actual changeover time'}</span>
           <input
             type="datetime-local"
             value={value}
