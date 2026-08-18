@@ -46,7 +46,9 @@ export interface AppStore {
   startRun(ref: TimetableRef): Promise<void>;
   advance(kind: TransitionKind): Promise<void>;
   undo(): Promise<void>;
+  correctTransitionTime(transitionId: string, correctedAt: Date): Promise<boolean>;
   skipDay(): Promise<boolean>;
+  clearAllData(): Promise<boolean>;
   reload(): Promise<void>;
 }
 
@@ -174,6 +176,34 @@ export const AppProvider = ({ services, bundledTimetables, children }: AppProvid
           if (!activeState) return null;
           return services.runs.undo(activeState);
         }),
+      correctTransitionTime: async (transitionId, correctedAt) => {
+        if (inFlight.current || !activeState) return false;
+        inFlight.current = true;
+        setBusy(true);
+        try {
+          setActiveState(
+            await services.runs.correctTransitionTime(
+              activeState.run.id,
+              transitionId,
+              correctedAt,
+            ),
+          );
+          setNotice(null);
+          return true;
+        } catch (error) {
+          const quartz = toQuartzError(error);
+          if (isBlockingError(quartz)) {
+            setBlockingError(quartz);
+            setPhase('blocked');
+          } else {
+            setNotice(quartz.message);
+          }
+          return false;
+        } finally {
+          inFlight.current = false;
+          setBusy(false);
+        }
+      },
       skipDay: async () => {
         if (inFlight.current) return false;
         const timezone = activeState?.timetable.timezone ?? bundledTimetables[0]?.timezone;
@@ -197,6 +227,26 @@ export const AppProvider = ({ services, bundledTimetables, children }: AppProvid
           } else {
             setNotice(quartz.message);
           }
+          return false;
+        } finally {
+          inFlight.current = false;
+          setBusy(false);
+        }
+      },
+      clearAllData: async () => {
+        if (inFlight.current) return false;
+        inFlight.current = true;
+        setBusy(true);
+        try {
+          await services.repository.clearAll();
+          setActiveState(null);
+          setDayDecision(null);
+          setNotice(null);
+          await load(false);
+          return true;
+        } catch (error) {
+          setBlockingError(toQuartzError(error));
+          setPhase('blocked');
           return false;
         } finally {
           inFlight.current = false;

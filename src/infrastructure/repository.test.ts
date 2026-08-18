@@ -217,12 +217,12 @@ describe.each(adapters)('$name satisfies the repository contract', ({ create }) 
     expect(await repository.getRunEvents(run.id)).toHaveLength(1);
   });
 
-  it('freezes a timetable version once a run has used it', async () => {
+  it('replaces a timetable definition in place even after a run has used it', async () => {
     await repository.createRun(ref, START);
     const changed = { ...simpleTimetable, name: 'Renamed plan' };
 
-    await expect(repository.saveTimetable(changed)).rejects.toThrow(/cannot be changed/);
-    expect((await repository.getTimetable('test-plan', 1)).name).toBe('Test plan');
+    await repository.saveTimetable(changed);
+    expect((await repository.getTimetable('test-plan', 1)).name).toBe('Renamed plan');
   });
 
   it('allows re-seeding an identical definition', async () => {
@@ -241,6 +241,40 @@ describe.each(adapters)('$name satisfies the repository contract', ({ create }) 
     expect((await restored.listTimetables()).length).toBe(2);
     expect((await restored.getRunEvents(run.id)).length).toBe(3);
     expect((await restored.getActiveRun())?.id).toBe(run.id);
+  });
+
+  it('corrects both records in a transition atomically', async () => {
+    const run = await repository.createRun(ref, START);
+    await advance('next', new Date('2026-03-02T00:50:00.000Z'));
+    const events = await repository.getRunEvents(run.id);
+
+    await repository.correctTransitionTime({
+      runId: run.id,
+      transitionId: events[1]!.transitionId,
+      correctedAt: new Date('2026-03-02T00:35:00.000Z'),
+      observedAt: new Date('2026-03-02T01:00:00.000Z'),
+      expectedSeq: events[events.length - 1]!.seq,
+    });
+
+    const corrected = await repository.getRunEvents(run.id);
+    expect(corrected[1]?.occurredAt.toISOString()).toBe('2026-03-02T00:35:00.000Z');
+    expect(corrected[2]?.occurredAt.toISOString()).toBe('2026-03-02T00:35:00.000Z');
+  });
+
+  it('clears every stored record', async () => {
+    await repository.createRun(ref, START);
+    await repository.skipDay({
+      timezone: simpleTimetable.timezone,
+      localDate: '2026-03-02',
+      occurredAt: new Date('2026-03-02T00:10:00.000Z'),
+      activeRunId: (await repository.getActiveRun())!.id,
+    });
+
+    await repository.clearAll();
+
+    expect(await repository.listTimetables()).toEqual([]);
+    expect(await repository.listRuns()).toEqual([]);
+    expect(await repository.getDayDecision(simpleTimetable.timezone, '2026-03-02')).toBeNull();
   });
 
   it('derives a skipped-day decision after restoring retained skipped history', async () => {

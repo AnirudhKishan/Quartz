@@ -84,4 +84,20 @@ export class RunService {
     await this.repository.undoLastTransition(state.run.id, this.clock.now());
     return this.loadStateById(state.run.id);
   }
+
+  async correctTransitionTime(
+    runId: string,
+    transitionId: string,
+    correctedAt: Date,
+  ): Promise<RunState> {
+    const state = await this.loadStateById(runId);
+    await this.repository.correctTransitionTime({
+      runId,
+      transitionId,
+      correctedAt,
+      observedAt: this.clock.now(),
+      expectedSeq: state.lastSeq,
+    });
+    return this.loadStateById(runId);
+  }
 }

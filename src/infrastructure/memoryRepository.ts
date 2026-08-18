@@ -10,10 +10,17 @@ import type { TimetableRepository } from '../application/repository';
 import type { BackupData } from '../domain/backup';
 import { systemIdGenerator, type IdGenerator } from '../domain/clock';
 import { QuartzError } from '../domain/errors';
-import { timetableKey, timetablesEqual, toSummary } from '../domain/timetable';
+import { timetableKey, toSummary } from '../domain/timetable';
 import { getLocalDate } from '../domain/time';
-import { applyRunPatch, planStartRun, planTransition, planUndo } from '../domain/transitions';
+import {
+  applyRunPatch,
+  planStartRun,
+  planTransition,
+  planTransitionTimeCorrection,
+  planUndo,
+} from '../domain/transitions';
 import type {
+  CorrectTransitionTimeCommand,
   DayDecision,
   Run,
   RunEvent,
@@ -48,20 +55,7 @@ export class InMemoryRepository implements TimetableRepository {
 
   async saveTimetable(timetable: Timetable): Promise<void> {
     const key = timetableKey(timetable.id, timetable.version);
-    const existing = this.timetables.get(key);
-    if (existing && !timetablesEqual(existing, timetable) && this.isVersionUsed(timetable)) {
-      throw new QuartzError(
-        'invalid-timetable',
-        `Timetable ${key} has already been used by a run and cannot be changed.`,
-      );
-    }
     this.timetables.set(key, timetable);
-  }
-
-  private isVersionUsed(timetable: Timetable): boolean {
-    return [...this.runs.values()].some(
-      (run) => run.timetableId === timetable.id && run.timetableVersion === timetable.version,
-    );
   }
 
   async createRun(ref: TimetableRef, occurredAt: Date): Promise<Run> {
@@ -167,6 +161,19 @@ export class InMemoryRepository implements TimetableRepository {
     this.runs.set(run.id, applyRunPatch(run, planned.runPatch));
   }
 
+  async correctTransitionTime(command: CorrectTransitionTimeCommand): Promise<void> {
+    const run = this.requireRun(command.runId);
+    const timetable = await this.getTimetable(run.timetableId, run.timetableVersion);
+    const events = this.events.get(run.id) ?? [];
+    const planned = planTransitionTimeCorrection(timetable, run, events, command);
+    const replacements = new Map(planned.events.map((event) => [event.id, event]));
+    this.events.set(
+      run.id,
+      events.map((event) => replacements.get(event.id) ?? event),
+    );
+    this.runs.set(run.id, applyRunPatch(run, planned.runPatch));
+  }
+
   async undoLastTransition(runId: string, occurredAt: Date): Promise<void> {
     const run = this.requireRun(runId);
     const timetable = await this.getTimetable(run.timetableId, run.timetableVersion);
@@ -216,6 +223,10 @@ export class InMemoryRepository implements TimetableRepository {
     for (const [runId, list] of this.events) {
       this.events.set(runId, list.sort((a, b) => a.seq - b.seq));
     }
+  }
+
+  async clearAll(): Promise<void> {
+    await this.replaceAll({ timetables: [], runs: [], events: [] });
   }
 
   private requireRun(runId: string): Run {

@@ -1,107 +1,115 @@
+import { useState } from 'react';
+
+import type { RunEvent } from '../../domain/types';
 import {
   deviationTone,
   formatDeviation,
-  formatDuration,
   formatLocalDate,
   formatPercent,
-  formatTimeInZone,
   formatTotalPositive,
 } from '../format';
 import { useApp } from '../store';
 import { useAsync } from '../useAsync';
+import { DayTimeline } from '../components/DayTimeline';
 import { ErrorNote, Loading, Screen } from '../components/Screen';
+import { TransitionTimeDialog } from '../components/TransitionTimeDialog';
 
 export const RunReportScreen = ({ runId }: { readonly runId: string }) => {
   const { services } = useApp();
-  const report = useAsync(() => services.reports.loadRunReport(runId), [services, runId]);
+  const [reloadKey, setReloadKey] = useState(0);
+  const [selectedTransition, setSelectedTransition] = useState<RunEvent | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<Error | null>(null);
+  const data = useAsync(
+    async () => ({
+      report: await services.reports.loadRunReport(runId),
+      state: await services.runs.loadStateById(runId),
+    }),
+    [services, runId, reloadKey],
+  );
 
-  if (report.status === 'loading') {
+  if (data.status === 'loading') {
     return (
       <Screen title="Day report" back={{ label: 'Reports', route: { kind: 'reports' } }}>
         <Loading />
       </Screen>
     );
   }
-
-  if (report.status === 'failed') {
+  if (data.status === 'failed') {
     return (
       <Screen title="Day report" back={{ label: 'Reports', route: { kind: 'reports' } }}>
-        <ErrorNote error={report.error} />
+        <ErrorNote error={data.error} />
       </Screen>
     );
   }
 
-  const { value } = report;
-  const zone = value.timetable.timezone;
+  const { report, state } = data.value;
 
   return (
     <Screen
-      title={formatLocalDate(value.run.localDate)}
-      subtitle={`${value.timetable.name} · v${value.run.timetableVersion}`}
+      title={formatLocalDate(report.run.localDate)}
+      subtitle={`${report.timetable.name} · ${report.timetable.timezone}`}
       back={{ label: 'Reports', route: { kind: 'reports' } }}
     >
       <section className="totals">
         <div className="totals__cell">
           <span className="totals__label">Day started</span>
-          <span className={`totals__value tone--${deviationTone(value.dayStartDeviationMs)}`}>
-            {formatDeviation(value.dayStartDeviationMs)}
+          <span className={`totals__value tone--${deviationTone(report.dayStartDeviationMs)}`}>
+            {formatDeviation(report.dayStartDeviationMs)}
           </span>
         </div>
         <div className="totals__cell">
           <span className="totals__label">Day finished</span>
-          <span className={`totals__value tone--${deviationTone(value.finalCompletionDeviationMs)}`}>
-            {formatDeviation(value.finalCompletionDeviationMs)}
+          <span className={`totals__value tone--${deviationTone(report.finalCompletionDeviationMs)}`}>
+            {formatDeviation(report.finalCompletionDeviationMs)}
           </span>
         </div>
         <div className="totals__cell">
           <span className="totals__label">Total overrun</span>
-          <span className="totals__value">
-            {formatTotalPositive(value.totalPositiveDurationDeviationMs)}
-          </span>
+          <span className="totals__value">{formatTotalPositive(report.totalPositiveDurationDeviationMs)}</span>
         </div>
         <div className="totals__cell">
           <span className="totals__label">Skipped</span>
           <span className="totals__value">
-            {value.skippedCount} of {value.reachedCount} ({formatPercent(value.skipRate)})
+            {report.skippedCount} of {report.reachedCount} ({formatPercent(report.skipRate)})
           </span>
         </div>
       </section>
 
-      <h2 className="section-title">Steps</h2>
-      <ul className="list">
-        {value.observations.map((observation) => (
-          <li className="card" key={observation.item.id}>
-            <h3 className="card__title">
-              {observation.item.label}
-              {observation.skipped && <span className="badge badge--warn">Skipped</span>}
-              {!observation.reached && <span className="badge">Not reached</span>}
-            </h3>
-            <p className="card__meta">
-              Planned {formatTimeInZone(observation.plannedStartUtc, zone)}–
-              {formatTimeInZone(observation.plannedEndUtc, zone)} (
-              {formatDuration(observation.plannedDurationMs)})
-            </p>
-            {observation.actualStart && (
-              <p className="card__meta">
-                Actual {formatTimeInZone(observation.actualStart, zone)}
-                {observation.actualEnd ? `–${formatTimeInZone(observation.actualEnd, zone)}` : ''}
-                {observation.actualDurationMs !== null
-                  ? ` (${formatDuration(observation.actualDurationMs)})`
-                  : ''}
-              </p>
-            )}
-            <p className="card__meta">
-              <span className={`tone--${deviationTone(observation.startDeviationMs)}`}>
-                Start {formatDeviation(observation.startDeviationMs)}
-              </span>
-              {' · '}
-              <span className={`tone--${deviationTone(observation.durationDeviationMs)}`}>
-                Duration {formatDeviation(observation.durationDeviationMs, 'longer')}
-              </span>
-            </p>
-          </li>
-        ))}
-      </ul>
+      {saveError && <ErrorNote error={saveError} />}
+      <h2 className="section-title">Day timeline</h2>
+      <DayTimeline
+        state={state}
+        now={services.clock.now()}
+        onEditTransition={setSelectedTransition}
+      />
+
+      {selectedTransition && (
+        <TransitionTimeDialog
+          state={state}
+          transition={selectedTransition}
+          observedAt={services.clock.now()}
+          busy={saving}
+          onClose={() => setSelectedTransition(null)}
+          onSave={async (correctedAt) => {
+            setSaving(true);
+            setSaveError(null);
+            try {
+              await services.runs.correctTransitionTime(
+                runId,
+                selectedTransition.transitionId,
+                correctedAt,
+              );
+              setSelectedTransition(null);
+              setReloadKey((value) => value + 1);
+            } catch (error) {
+              setSaveError(error instanceof Error ? error : new Error(String(error)));
+            } finally {
+              setSaving(false);
+            }
+          }}
+        />
+      )}
     </Screen>
   );
 };

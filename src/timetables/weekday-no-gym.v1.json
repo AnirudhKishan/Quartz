@@ -7,8 +7,9 @@
   "items": [
     { "id": "wake-and-prepare", "label": "Brush, hydrate and change", "plannedStart": "05:30", "plannedEnd": "05:45" },
     { "id": "morning-pooja", "label": "Pooja", "plannedStart": "05:45", "plannedEnd": "06:00" },
-    { "id": "chores-preparation-shower", "label": "Chores, preparation and shower", "plannedStart": "06:00", "plannedEnd": "07:00" },
-    { "id": "work-from-home", "label": "Work from home", "plannedStart": "07:00", "plannedEnd": "08:00" },
+    { "id": "morning-chores", "label": "Morning chores", "plannedStart": "06:00", "plannedEnd": "06:30" },
+    { "id": "shower-get-ready", "label": "Shower and get ready", "plannedStart": "06:30", "plannedEnd": "07:30" },
+    { "id": "work-from-home", "label": "Work from home", "plannedStart": "07:30", "plannedEnd": "08:00" },
     { "id": "breakfast", "label": "Breakfast", "plannedStart": "08:00", "plannedEnd": "08:30" },
     { "id": "commute-to-work", "label": "Commute", "plannedStart": "08:30", "plannedEnd": "09:30" },
     { "id": "work-morning", "label": "Work", "plannedStart": "09:30", "plannedEnd": "13:00" },

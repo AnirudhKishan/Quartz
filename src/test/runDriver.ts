@@ -1,5 +1,11 @@
 import { reconstructRunState } from '../domain/runState';
-import { applyRunPatch, planStartRun, planTransition, planUndo } from '../domain/transitions';
+import {
+  applyRunPatch,
+  planStartRun,
+  planTransition,
+  planTransitionTimeCorrection,
+  planUndo,
+} from '../domain/transitions';
 import type { Run, RunEvent, RunState, Timetable, TransitionKind } from '../domain/types';
 
 /**
@@ -54,6 +60,20 @@ export class RunDriver {
   undo(occurredAt: Date): this {
     const planned = planUndo(this.timetable, this.run, this.events, occurredAt);
     this.events = [...this.events, ...planned.events];
+    this.run = applyRunPatch(this.run, planned.runPatch);
+    return this;
+  }
+
+  correct(transitionId: string, correctedAt: Date, observedAt = correctedAt): this {
+    const planned = planTransitionTimeCorrection(this.timetable, this.run, this.events, {
+      runId: this.run.id,
+      transitionId,
+      correctedAt,
+      observedAt,
+      expectedSeq: this.state.lastSeq,
+    });
+    const replacements = new Map(planned.events.map((event) => [event.id, event]));
+    this.events = this.events.map((event) => replacements.get(event.id) ?? event);
     this.run = applyRunPatch(this.run, planned.runPatch);
     return this;
   }

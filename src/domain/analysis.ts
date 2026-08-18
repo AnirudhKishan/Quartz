@@ -1,9 +1,8 @@
 /**
  * Measurement engine.
  *
- * Nothing here is ever persisted. Every number is recomputed from the exact
- * timetable version a run was measured against plus that run's effective event
- * history, so historical results can never drift when a plan changes.
+ * Nothing here is ever persisted. Every number is recomputed from the currently
+ * stored timetable definition plus the run's effective event history.
  */
 
 import { reconstructRunState } from './runState';

@@ -7,6 +7,7 @@ import { formatLocalDate } from '../format';
 import { navigate } from '../router';
 import { useApp } from '../store';
 import { EmptyState, Screen } from '../components/Screen';
+import { ClearDataControl } from '../components/ClearDataControl';
 
 const byName = (a: Timetable, b: Timetable): number => a.name.localeCompare(b.name);
 
@@ -46,6 +47,15 @@ export const SelectionScreen = () => {
         <nav className="nav">
           <a href="#/reports">Reports</a>
           <a href="#/data">Backup</a>
+          <details className="overflow-menu overflow-menu--footer">
+            <summary aria-label="More actions">
+              <span className="sr-only">More actions</span>
+              <span aria-hidden="true">•••</span>
+            </summary>
+            <div className="overflow-menu__panel">
+              <ClearDataControl compact />
+            </div>
+          </details>
         </nav>
       }
     >

@@ -13,15 +13,17 @@ import type { BackupData } from '../domain/backup';
 import { systemIdGenerator, type IdGenerator } from '../domain/clock';
 import { QuartzError } from '../domain/errors';
 import { getLocalDate } from '../domain/time';
-import { timetablesEqual, toSummary } from '../domain/timetable';
+import { toSummary } from '../domain/timetable';
 import {
   applyRunPatch,
   planStartRun,
   planTransition,
+  planTransitionTimeCorrection,
   planUndo,
   type PlannedWrite,
 } from '../domain/transitions';
 import type {
+  CorrectTransitionTimeCommand,
   DayDecision,
   Run,
   RunEvent,
@@ -194,46 +196,11 @@ export class IndexedDbRepository implements TimetableRepository {
   async saveTimetable(timetable: Timetable): Promise<void> {
     const db = await this.database();
     return new Promise((resolve, reject) => {
-      const tx = db.transaction([TIMETABLES, RUNS], 'readwrite');
-      let failure: unknown = null;
-
+      const tx = db.transaction([TIMETABLES], 'readwrite');
       tx.oncomplete = () => resolve();
-      tx.onabort = () => reject(failure ?? storageError(tx.error));
-      tx.onerror = () => reject(failure ?? storageError(tx.error));
-
-      const store = tx.objectStore(TIMETABLES);
-      const existingRequest = store.get([timetable.id, timetable.version]);
-      existingRequest.onsuccess = () => {
-        const existing = existingRequest.result as Timetable | undefined;
-        if (!existing) {
-          store.put(timetable);
-          return;
-        }
-        if (timetablesEqual(existing, timetable)) return;
-
-        // A version that a run has used is frozen: change means a new version.
-        const runsRequest = tx.objectStore(RUNS).getAll();
-        runsRequest.onsuccess = () => {
-          const used = (runsRequest.result as unknown[])
-            .map(asRun)
-            .some(
-              (run) =>
-                run !== null &&
-                run.timetableId === timetable.id &&
-                run.timetableVersion === timetable.version,
-            );
-          if (used) {
-            failure = new QuartzError(
-              'invalid-timetable',
-              `Timetable ${timetable.id}@${timetable.version} has already been used by a run ` +
-                'and cannot be changed. Publish a new version instead.',
-            );
-            tx.abort();
-            return;
-          }
-          store.put(timetable);
-        };
-      };
+      tx.onabort = () => reject(storageError(tx.error));
+      tx.onerror = () => reject(storageError(tx.error));
+      tx.objectStore(TIMETABLES).put(timetable);
     });
   }
 
@@ -565,6 +532,66 @@ export class IndexedDbRepository implements TimetableRepository {
     );
   }
 
+  correctTransitionTime(command: CorrectTransitionTimeCommand): Promise<void> {
+    return this.database().then(
+      (db) =>
+        new Promise<void>((resolve, reject) => {
+          const tx = db.transaction([TIMETABLES, RUNS, EVENTS], 'readwrite');
+          let failure: unknown = null;
+          tx.oncomplete = () => (failure ? reject(failure) : resolve());
+          tx.onabort = () => reject(failure ?? storageError(tx.error));
+          tx.onerror = () => reject(failure ?? storageError(tx.error));
+
+          const runStore = tx.objectStore(RUNS);
+          const eventStore = tx.objectStore(EVENTS);
+          const runRequest = runStore.get(command.runId);
+          runRequest.onsuccess = () => {
+            const run = asRun(runRequest.result);
+            if (!run) {
+              failure = new QuartzError('not-found', `Run ${command.runId} does not exist.`);
+              tx.abort();
+              return;
+            }
+
+            const timetableRequest = tx
+              .objectStore(TIMETABLES)
+              .get([run.timetableId, run.timetableVersion]);
+            timetableRequest.onsuccess = () => {
+              const timetable = timetableRequest.result as Timetable | undefined;
+              if (!timetable) {
+                failure = new QuartzError(
+                  'corrupt-history',
+                  `Run ${run.id} references a timetable that is no longer stored.`,
+                );
+                tx.abort();
+                return;
+              }
+
+              const eventsRequest = eventStore.index('runId').getAll(run.id);
+              eventsRequest.onsuccess = () => {
+                try {
+                  const events = (eventsRequest.result as unknown[])
+                    .map(asEvent)
+                    .sort((a, b) => a.seq - b.seq);
+                  const planned = planTransitionTimeCorrection(
+                    timetable,
+                    run,
+                    events,
+                    command,
+                  );
+                  for (const event of planned.events) eventStore.put(event);
+                  if (planned.runPatch) runStore.put(applyRunPatch(run, planned.runPatch));
+                } catch (error) {
+                  failure = error;
+                  tx.abort();
+                }
+              };
+            };
+          };
+        }),
+    );
+  }
+
   undoLastTransition(runId: string, occurredAt: Date): Promise<void> {
     return this.mutateRun(runId, (timetable, run, events) =>
       planUndo(timetable, run, events, occurredAt),
@@ -630,5 +657,9 @@ export class IndexedDbRepository implements TimetableRepository {
       for (const run of data.runs) runs.put(run);
       for (const event of data.events) events.put(event);
     });
+  }
+
+  async clearAll(): Promise<void> {
+    await this.replaceAll({ timetables: [], runs: [], events: [] });
   }
 }

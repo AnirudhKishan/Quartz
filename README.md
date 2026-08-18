@@ -52,10 +52,9 @@ in-memory repository.
 
 ### The plan and reality stay separate
 
-A timetable is a versioned, immutable definition. A run records what actually
-happened as an append-only event history, and it keeps the timetable version it
-was measured against forever. Publishing a new version never changes what an old
-day is compared to.
+A timetable defines the intended day. A run records what actually happened.
+Bundled timetable updates replace the matching local definition in place, so old
+reports use the current definition unless local data is cleared.
 
 ### One press, one timestamp
 
@@ -65,18 +64,20 @@ on the item and sequence number the user was actually looking at. A repeated tap
 therefore fails its precondition and re-reads state instead of recording a second
 transition.
 
-### Undo appends, it never rewrites
+### Undo appends; explicit corrections edit time
 
 Every event produced by one press shares a transition ID. **Undo** appends a
 single `undo` event that references that transition. Nothing is deleted and no
-past timestamp is edited, so a restored item keeps the start time it originally
-had. Undoing the final press reopens a completed day.
+past transition is removed. If **Next** or **Skip** was pressed late, the shared
+changeover time can be corrected from the day timeline; both affected event
+timestamps are updated atomically. Undoing the final press reopens a completed
+day.
 
 ### Nothing derived is stored
 
-Deviations, totals, and rankings are recomputed from the timetable version plus
-the event history whenever a report is opened, so a report can never drift out of
-agreement with the recorded history.
+Deviations, totals, and rankings are recomputed from the current stored timetable
+definition plus the event history whenever a report is opened, so a report always
+reflects the latest corrected data.
 
 ### Invalid state is reported, never guessed
 
@@ -124,3 +125,7 @@ site data, or losing the device removes anything that has not been exported.
 The Backup screen exports every timetable, run, and event as one versioned JSON
 file, and restores one after validating it completely and asking for explicit
 confirmation. A backup that fails validation changes nothing.
+
+The secondary menu also provides **Clear all local data**. It requires destructive
+confirmation, removes all Quartz data on the device, and reloads the bundled
+timetables as a fresh install.

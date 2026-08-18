@@ -84,6 +84,66 @@ describe('Undo', () => {
     expect(driver.state.currentItemStartedAt?.toISOString()).toBe('2026-03-02T00:00:00.000Z');
   });
 
+  describe('transition time correction', () => {
+    it('updates the completed and started events that share a transition', () => {
+      const driver = new RunDriver(simpleTimetable, START).next(at('2026-03-02T00:50:00.000Z'));
+      const transitionId = driver.events[1]!.transitionId;
+
+      driver.correct(
+        transitionId,
+        at('2026-03-02T00:35:00.000Z'),
+        at('2026-03-02T01:00:00.000Z'),
+      );
+
+      expect(driver.events[1]?.occurredAt.toISOString()).toBe('2026-03-02T00:35:00.000Z');
+      expect(driver.events[2]?.occurredAt.toISOString()).toBe('2026-03-02T00:35:00.000Z');
+      expect(driver.state.currentItemStartedAt?.toISOString()).toBe('2026-03-02T00:35:00.000Z');
+    });
+
+    it('rejects a correction that crosses a neighboring transition', () => {
+      const driver = new RunDriver(simpleTimetable, START)
+        .next(at('2026-03-02T00:40:00.000Z'))
+        .next(at('2026-03-02T01:40:00.000Z'));
+
+      expect(() =>
+        driver.correct(
+          driver.events[1]!.transitionId,
+          at('2026-03-02T01:41:00.000Z'),
+          at('2026-03-02T02:00:00.000Z'),
+        ),
+      ).toThrow(/between the neighboring changeovers/);
+    });
+
+    it('updates completedAt when the final boundary is corrected', () => {
+      const driver = new RunDriver(simpleTimetable, START)
+        .next(at('2026-03-02T00:40:00.000Z'))
+        .next(at('2026-03-02T01:40:00.000Z'))
+        .next(at('2026-03-02T02:20:00.000Z'));
+
+      driver.correct(
+        driver.events[5]!.transitionId,
+        at('2026-03-02T02:10:00.000Z'),
+        at('2026-03-02T03:00:00.000Z'),
+      );
+
+      expect(driver.run.completedAt?.toISOString()).toBe('2026-03-02T02:10:00.000Z');
+      expect(driver.state.status).toBe('completed');
+    });
+
+    it('keeps a corrected transition undoable', () => {
+      const driver = new RunDriver(simpleTimetable, START).next(at('2026-03-02T00:50:00.000Z'));
+      driver
+        .correct(
+          driver.events[1]!.transitionId,
+          at('2026-03-02T00:35:00.000Z'),
+          at('2026-03-02T01:00:00.000Z'),
+        )
+        .undo(at('2026-03-02T01:01:00.000Z'));
+
+      expect(driver.state.currentItem?.id).toBe('wake');
+    });
+  });
+
   it('appends rather than deleting, so the history stays auditable', () => {
     const driver = new RunDriver(simpleTimetable, START)
       .next(at('2026-03-02T00:40:00.000Z'))

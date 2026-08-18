@@ -25,7 +25,7 @@ export type Weekday =
   | 'saturday'
   | 'sunday';
 
-/** An immutable, versioned plan. Never mutate a version that a run has used. */
+/** A locally stored plan definition, replaced when the matching bundle changes. */
 export interface Timetable {
   readonly id: string;
   readonly name: string;
@@ -82,11 +82,11 @@ export interface SkipDayCommand {
 export type RunEventType = 'started' | 'completed' | 'skipped' | 'undo';
 
 /**
- * An append-only record of something that actually happened.
+ * A record of something that actually happened.
  *
  * `transitionId` groups every event produced by a single button press. It is an
  * internal addition to the specification's event shape: it makes Undo
- * unambiguous without ever rewriting historical timestamps.
+ * unambiguous while allowing an explicit transition-time correction.
  */
 export interface RunEvent {
   /** Unique and monotonically sortable within a run. */
@@ -116,6 +116,17 @@ export interface TransitionCommand {
   readonly kind: TransitionKind;
   readonly occurredAt: Date;
   readonly expectedItemId: string;
+  readonly expectedSeq: number;
+}
+
+/** A guarded replacement for the shared timestamp of one Next or Skip transition. */
+export interface CorrectTransitionTimeCommand {
+  readonly runId: string;
+  /** The transition ID is the terminal event ID produced by Next or Skip. */
+  readonly transitionId: string;
+  readonly correctedAt: Date;
+  /** Current time when the correction is submitted; prevents future boundaries. */
+  readonly observedAt: Date;
   readonly expectedSeq: number;
 }
 

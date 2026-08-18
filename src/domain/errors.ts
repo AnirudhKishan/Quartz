@@ -11,6 +11,7 @@ export type QuartzErrorCode =
   | 'no-active-run'
   | 'run-completed'
   | 'nothing-to-undo'
+  | 'invalid-transition-time'
   | 'not-found'
   | 'storage-unavailable';
 

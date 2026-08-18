@@ -1,6 +1,7 @@
 import type { QuartzError } from '../../domain/errors';
 import { useApp } from '../store';
 import { Screen } from '../components/Screen';
+import { ClearDataControl } from '../components/ClearDataControl';
 
 const guidance = (error: QuartzError): string => {
   switch (error.code) {
@@ -45,6 +46,7 @@ export const RecoveryScreen = ({ error }: { readonly error: QuartzError }) => {
       <a className="button button--secondary" href="#/data">
         Restore from a backup
       </a>
+      <ClearDataControl />
     </Screen>
   );
 };

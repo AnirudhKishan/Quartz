@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -69,7 +69,7 @@ describe('selection screen', () => {
     await user().click(screen.getByRole('button', { name: 'Start day' }));
 
     expect(await screen.findByRole('heading', { name: 'Wake' })).toBeInTheDocument();
-    expect(screen.getByText('Step 1 of 3')).toBeInTheDocument();
+    expect(screen.getByLabelText('Timetable day')).toBeInTheDocument();
   });
 
   it('refuses to start a second day while one is running', async () => {
@@ -113,9 +113,9 @@ describe('active run screen', () => {
   it('shows the planned window, the elapsed time, and what is next', async () => {
     await startDay();
 
-    expect(screen.getByText('Planned 06:00 – 06:30')).toBeInTheDocument();
+    expect(screen.getByText('Planned 06:00–06:30')).toBeInTheDocument();
     expect(screen.getByLabelText('Time in this step')).toHaveTextContent(/^\d{2}:\d{2}$/);
-    expect(screen.getByText(/Gym/)).toHaveTextContent('Gym · 06:30');
+    expect(screen.getByRole('heading', { name: 'Gym' })).toBeInTheDocument();
   });
 
   it('advances to the next item and records the deviation of the one just finished', async () => {
@@ -124,9 +124,8 @@ describe('active run screen', () => {
     clock.advanceMinutes(40);
     await user().click(screen.getByRole('button', { name: 'Next' }));
 
-    expect(await screen.findByRole('heading', { name: 'Gym' })).toBeInTheDocument();
-    expect(screen.getByText('Step 2 of 3')).toBeInTheDocument();
-    expect(screen.getByText('Started 10m 00s late')).toBeInTheDocument();
+    expect(await screen.findByText('Gym in progress')).toBeInTheDocument();
+    expect(screen.getByText('10m 00s late')).toBeInTheDocument();
   });
 
   it('undoes the last transition and restores the original start of the item', async () => {
@@ -134,19 +133,18 @@ describe('active run screen', () => {
 
     clock.advanceMinutes(40);
     await user().click(screen.getByRole('button', { name: 'Next' }));
-    await screen.findByRole('heading', { name: 'Gym' });
+    await screen.findByText('Gym in progress');
 
     clock.advanceMinutes(5);
     await user().click(screen.getByRole('button', { name: 'Undo' }));
 
-    expect(await screen.findByRole('heading', { name: 'Wake' })).toBeInTheDocument();
-    // The restored item keeps the start it originally had, not the undo instant.
-    expect(screen.getByText('Started on time')).toBeInTheDocument();
+    expect(await screen.findByText('Wake in progress')).toBeInTheDocument();
+    expect(screen.getByText('on time')).toBeInTheDocument();
   });
 
   it('cannot undo before the first recorded step', async () => {
     await startDay();
-    expect(screen.getByRole('button', { name: 'Undo' })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: 'Undo' })).not.toBeInTheDocument();
   });
 
   it('skips an item without offering a confirmation prompt', async () => {
@@ -155,7 +153,7 @@ describe('active run screen', () => {
     clock.advanceMinutes(30);
     await user().click(screen.getByRole('button', { name: 'Skip' }));
 
-    expect(await screen.findByRole('heading', { name: 'Gym' })).toBeInTheDocument();
+    expect(await screen.findByText('Gym in progress')).toBeInTheDocument();
     expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
   });
 
@@ -166,7 +164,7 @@ describe('active run screen', () => {
 
     clock.advanceMinutes(30);
     await user().click(screen.getByRole('button', { name: 'Next' }));
-    await screen.findByRole('heading', { name: 'Gym' });
+    await screen.findByText('Gym in progress');
     const eventsBeforeSkip = await repository.getRunEvents(run.id);
 
     await user().click(screen.getByRole('button', { name: 'Skip day' }));
@@ -215,7 +213,36 @@ describe('active run screen', () => {
     expect(screen.getByRole('button', { name: 'Skip' })).toBeDisabled();
 
     gate.release();
-    expect(await screen.findByRole('heading', { name: 'Gym' })).toBeInTheDocument();
+    expect(await screen.findByText('Gym in progress')).toBeInTheDocument();
+  });
+
+  it('corrects a recently recorded changeover from the timeline', async () => {
+    const { clock, repository } = await startDay();
+    clock.advanceMinutes(40);
+    await user().click(screen.getByRole('button', { name: 'Next' }));
+    await screen.findByText('Gym in progress');
+
+    await user().click(screen.getByRole('button', { name: /06:40 Edit time/ }));
+    const input = screen.getByLabelText('Actual changeover time');
+    fireEvent.change(input, { target: { value: '2026-03-02T06:30' } });
+    await user().click(screen.getByRole('button', { name: 'Save correction' }));
+
+    expect(await screen.findByRole('button', { name: /06:30 Edit time/ })).toBeInTheDocument();
+    const run = await repository.getActiveRun();
+    const events = await repository.getRunEvents(run!.id);
+    expect(events[1]?.occurredAt.toISOString()).toBe('2026-03-02T01:00:00.000Z');
+    expect(events[2]?.occurredAt.toISOString()).toBe('2026-03-02T01:00:00.000Z');
+  });
+
+  it('clears local data from the overflow menu and reseeds a fresh install', async () => {
+    const { repository } = await startDay();
+    await user().click(screen.getByText('More actions'));
+    await user().click(screen.getByRole('button', { name: 'Clear all local data' }));
+    await user().click(screen.getByRole('button', { name: 'Permanently clear data' }));
+
+    expect(await screen.findByRole('heading', { name: 'Quartz' })).toBeInTheDocument();
+    expect(await repository.listRuns()).toEqual([]);
+    expect(await repository.listTimetables()).toHaveLength(1);
   });
 });
 
@@ -244,7 +271,21 @@ describe('reports', () => {
     expect(screen.getByText('Day started')).toBeInTheDocument();
     // Wake was planned for 30 minutes and took 60.
     const wake = screen.getByRole('heading', { name: 'Wake' }).closest('li')!;
-    expect(within(wake).getByText(/Duration 30m 00s longer/)).toBeInTheDocument();
+    expect(within(wake).getByText('Duration 30m 00s longer')).toBeInTheDocument();
+  });
+
+  it('allows a completed-day boundary to be corrected from its report', async () => {
+    await completeADay();
+    await user().click(screen.getByRole('link', { name: 'See the report' }));
+    await screen.findByRole('heading', { name: /2 Mar 2026/ });
+
+    await user().click(screen.getByRole('button', { name: /08:30 Edit time/ }));
+    fireEvent.change(screen.getByLabelText('Actual changeover time'), {
+      target: { value: '2026-03-02T08:20' },
+    });
+    await user().click(screen.getByRole('button', { name: 'Save correction' }));
+
+    expect(await screen.findByText('20m 00s late')).toBeInTheDocument();
   });
 
   it('ranks the steps that cause deviation across days', async () => {

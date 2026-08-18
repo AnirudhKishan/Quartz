@@ -40,8 +40,8 @@ const runADay = async (
   return state;
 };
 
-describe('a run stays tied to the timetable version it was measured against', () => {
-  it('reports an old run against its own version after a newer one is bundled', async () => {
+describe('a timetable definition can be replaced in place', () => {
+  it('reinterprets an existing run against the replacement definition', async () => {
     const repository = new InMemoryRepository(sequentialIdGenerator());
     const clock = clockFrom(DAY_START);
     const services = createServices(repository, clock);
@@ -49,18 +49,16 @@ describe('a run stays tied to the timetable version it was measured against', ()
     await repository.saveTimetable(simpleTimetable);
     await runADay(services, clock, 1, ['next', 'next', 'next'], [30, 60, 30]);
 
-    // A later version changes the plan; the completed run must not move with it.
-    await repository.saveTimetable(simpleTimetableV2);
+    await repository.saveTimetable({ ...simpleTimetableV2, version: 1 });
 
     const runs = await repository.listCompletedRuns();
     const report = await services.reports.loadRunReport(runs[0]!.id);
 
     expect(report.run.timetableVersion).toBe(1);
     expect(report.timetable.version).toBe(1);
-    expect(report.observations[0]?.item.label).toBe('Wake');
-    expect(report.observations[0]?.plannedDurationMs).toBe(30 * 60_000);
-    // Every step matched its v1 plan exactly.
-    expect(report.totalPositiveDurationDeviationMs).toBe(0);
+    expect(report.observations[0]?.item.label).toBe('Wake up');
+    expect(report.observations[0]?.plannedDurationMs).toBe(20 * 60_000);
+    expect(report.totalPositiveDurationDeviationMs).toBe(10 * 60_000);
   });
 });
 

@@ -1,7 +1,7 @@
 /**
  * Application start-up.
  *
- * Storage is opened, bundled plans are seeded, and any active run is
+ * Storage is opened, bundled plans are seeded or replaced, and any active run is
  * reconstructed and validated *before* the UI offers a single action. A failure
  * here is reported explicitly rather than worked around.
  */

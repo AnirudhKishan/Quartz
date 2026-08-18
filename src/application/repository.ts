@@ -7,6 +7,7 @@
 
 import type { BackupData } from '../domain/backup';
 import type {
+  CorrectTransitionTimeCommand,
   DayDecision,
   Run,
   RunEvent,
@@ -20,10 +21,7 @@ import type {
 export interface TimetableRepository {
   listTimetables(): Promise<TimetableSummary[]>;
   getTimetable(id: string, version: number): Promise<Timetable>;
-  /**
-   * Store a timetable version. Rejects an attempt to change a version that a
-   * run has already been measured against.
-   */
+  /** Store or replace a timetable definition with the same ID and version. */
   saveTimetable(timetable: Timetable): Promise<void>;
 
   /**
@@ -39,6 +37,8 @@ export interface TimetableRepository {
 
   /** Applies a guarded Next or Skip as one atomic write. */
   appendTransition(command: TransitionCommand): Promise<void>;
+  /** Atomically replaces both timestamps belonging to an effective transition. */
+  correctTransitionTime(command: CorrectTransitionTimeCommand): Promise<void>;
   undoLastTransition(runId: string, occurredAt: Date): Promise<void>;
   getRunEvents(runId: string): Promise<RunEvent[]>;
   listCompletedRuns(): Promise<Run[]>;
@@ -47,4 +47,5 @@ export interface TimetableRepository {
   /** Whole-database export and atomic replace, used by backup and restore. */
   exportAll(): Promise<BackupData>;
   replaceAll(data: BackupData): Promise<void>;
+  clearAll(): Promise<void>;
 }

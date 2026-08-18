@@ -12,6 +12,7 @@ import { eventId, findUndoTarget, reconstructRunState } from './runState';
 import { getLocalDate } from './time';
 import { isTimetableEligible } from './timetable';
 import type {
+  CorrectTransitionTimeCommand,
   Run,
   RunEvent,
   RunState,
@@ -28,6 +29,12 @@ export interface RunPatch {
 export interface PlannedWrite {
   readonly events: readonly RunEvent[];
   /** Present only when the command changes the run itself. */
+  readonly runPatch: RunPatch | null;
+  readonly state: RunState;
+}
+
+export interface PlannedCorrection {
+  readonly events: readonly RunEvent[];
   readonly runPatch: RunPatch | null;
   readonly state: RunState;
 }
@@ -92,6 +99,9 @@ export const planStartRun = (
 
 const terminalTypeFor = (kind: TransitionKind): RunEvent['type'] =>
   kind === 'next' ? 'completed' : 'skipped';
+
+const isTerminalEvent = (event: RunEvent): boolean =>
+  event.type === 'completed' || event.type === 'skipped';
 
 /**
  * Plan a Next or Skip.
@@ -211,6 +221,86 @@ export const planUndo = (
     events: [undoEvent],
     // Undoing the final Next or Skip reopens the run.
     runPatch: run.status === 'completed' ? { status: 'active', completedAt: null } : null,
+    state,
+  };
+};
+
+/**
+ * Replace the timestamp shared by one effective Next or Skip transition.
+ *
+ * Corrections intentionally rewrite the existing records. Event identity and
+ * transition grouping stay unchanged, so reconstruction and Undo keep working.
+ */
+export const planTransitionTimeCorrection = (
+  timetable: Timetable,
+  run: Run,
+  events: readonly RunEvent[],
+  command: CorrectTransitionTimeCommand,
+): PlannedCorrection => {
+  const state = reconstructRunState(timetable, run, events);
+  if (run.status === 'skipped') {
+    throw new QuartzError('invalid-transition-time', 'A skipped day cannot be corrected.');
+  }
+  if (command.expectedSeq !== state.lastSeq) {
+    throw new QuartzError(
+      'stale-state',
+      'The run changed before this time correction was applied.',
+    );
+  }
+  if (
+    Number.isNaN(command.correctedAt.getTime()) ||
+    Number.isNaN(command.observedAt.getTime())
+  ) {
+    throw new QuartzError('invalid-transition-time', 'The corrected time is not valid.');
+  }
+
+  const targetIndex = state.effectiveEvents.findIndex(
+    (event) =>
+      event.id === command.transitionId &&
+      event.transitionId === command.transitionId &&
+      isTerminalEvent(event),
+  );
+  const target = state.effectiveEvents[targetIndex];
+  if (!target) {
+    throw new QuartzError(
+      'stale-state',
+      'That changeover is no longer part of the effective run history.',
+    );
+  }
+
+  const previous = state.effectiveEvents[targetIndex - 1];
+  const nextStarted = state.effectiveEvents[targetIndex + 1];
+  const nextBoundary =
+    nextStarted?.transitionId === target.transitionId
+      ? state.effectiveEvents[targetIndex + 2]
+      : nextStarted;
+  const correctedMs = command.correctedAt.getTime();
+  const minimumMs = previous?.occurredAt.getTime() ?? run.startedAt.getTime();
+  const maximumMs = Math.min(
+    nextBoundary?.occurredAt.getTime() ?? command.observedAt.getTime(),
+    command.observedAt.getTime(),
+  );
+
+  if (correctedMs < minimumMs || correctedMs > maximumMs) {
+    const range =
+      minimumMs === maximumMs
+        ? `The only valid time is ${new Date(minimumMs).toISOString()}.`
+        : `Choose a time from ${new Date(minimumMs).toISOString()} through ${new Date(maximumMs).toISOString()}.`;
+    throw new QuartzError(
+      'invalid-transition-time',
+      'The corrected time must stay between the neighboring changeovers.',
+      [range],
+    );
+  }
+
+  const correctedEvents = state.effectiveEvents
+    .filter((event) => event.transitionId === target.transitionId)
+    .map((event) => ({ ...event, occurredAt: command.correctedAt }));
+  const isFinal = correctedEvents.length === 1 && run.status === 'completed';
+
+  return {
+    events: correctedEvents,
+    runPatch: isFinal ? { status: 'completed', completedAt: command.correctedAt } : null,
     state,
   };
 };
