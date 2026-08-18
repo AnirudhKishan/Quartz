@@ -64,6 +64,41 @@ describe('buildRunReport', () => {
     expect(observation(report, 'breakfast').startDeviationMs).toBe(-minutes(10));
   });
 
+  describe('flexible execution reporting', () => {
+    it('keeps original duration estimates after reordering and excludes reordered starts', () => {
+      const driver = new RunDriver(simpleTimetable, START)
+        .reorder('breakfast')
+        .next(at('2026-03-02T00:30:00.000Z'))
+        .next(at('2026-03-02T01:00:00.000Z'));
+      const report = buildRunReport(simpleTimetable, driver.run, driver.events);
+
+      expect(report.observations.map((observation) => observation.item.id)).toEqual([
+        'wake',
+        'breakfast',
+        'gym',
+      ]);
+      const breakfast = report.observations[1]!;
+      expect(breakfast.reordered).toBe(true);
+      expect(breakfast.startDeviationMs).toBeNull();
+      expect(breakfast.actualDurationMs).toBe(30 * 60_000);
+    });
+
+    it('reports time between tasks separately', () => {
+      const driver = new RunDriver(simpleTimetable, START)
+        .finish(at('2026-03-02T00:30:00.000Z'))
+        .startNext(at('2026-03-02T00:45:00.000Z'));
+      const report = buildRunReport(simpleTimetable, driver.run, driver.events);
+
+      expect(report.totalBetweenTasksMs).toBe(15 * 60_000);
+      expect(report.betweenTasks[0]).toMatchObject({
+        afterItemId: 'wake',
+        beforeItemId: 'gym',
+        durationMs: 15 * 60_000,
+      });
+      expect(report.observations[0]?.actualDurationMs).toBe(30 * 60_000);
+    });
+  });
+
   it('measures actual duration and duration deviation', () => {
     const driver = completedRun();
     const report = buildRunReport(simpleTimetable, driver.run, driver.events);

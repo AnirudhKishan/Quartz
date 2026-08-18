@@ -12,7 +12,7 @@ import { assertUniqueVersions, parseTimetable, timetableKey } from './timetable'
 import type { Run, RunEvent, Timetable } from './types';
 
 export const BACKUP_FORMAT = 'quartz.backup';
-export const BACKUP_VERSION = 1;
+export const BACKUP_VERSION = 2;
 
 export interface BackupData {
   readonly timetables: readonly Timetable[];
@@ -81,7 +81,7 @@ export const parseBackupDocument = (raw: unknown): BackupData => {
       [`Expected format "${BACKUP_FORMAT}" but found ${JSON.stringify(raw.format)}.`],
     );
   }
-  if (raw.version !== BACKUP_VERSION) {
+  if (raw.version !== 1 && raw.version !== BACKUP_VERSION) {
     throw new QuartzError(
       'invalid-backup',
       `Unsupported backup version ${String(raw.version)}.`,
@@ -142,6 +142,23 @@ export const parseBackupDocument = (raw: unknown): BackupData => {
       entry.completedAt === null || entry.completedAt === undefined
         ? null
         : parseInstant(entry.completedAt, `${at}.completedAt`, errors);
+    const executionOrder =
+      raw.version === 1 || entry.executionOrder === undefined
+        ? null
+        : entry.executionOrder === null
+          ? null
+          : Array.isArray(entry.executionOrder) &&
+              entry.executionOrder.every((itemId) => typeof itemId === 'string')
+            ? entry.executionOrder
+            : null;
+    if (
+      raw.version === BACKUP_VERSION &&
+      entry.executionOrder !== null &&
+      (!Array.isArray(entry.executionOrder) ||
+        !entry.executionOrder.every((itemId) => typeof itemId === 'string'))
+    ) {
+      errors.push(`${at}.executionOrder must be an array of item IDs or null`);
+    }
 
     if (
       typeof timetableId === 'string' &&
@@ -162,6 +179,7 @@ export const parseBackupDocument = (raw: unknown): BackupData => {
         startedAt,
         completedAt,
         status: status as Run['status'],
+        executionOrder,
       });
     }
   });

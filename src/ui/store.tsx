@@ -22,6 +22,7 @@ import { QuartzError, isBlockingError, isQuartzError } from '../domain/errors';
 import { getLocalDate } from '../domain/time';
 import type {
   DayDecision,
+  EditTimelineCommand,
   RunState,
   Timetable,
   TimetableRef,
@@ -45,8 +46,15 @@ export interface AppStore {
   dismissNotice(): void;
   startRun(ref: TimetableRef): Promise<void>;
   advance(kind: TransitionKind): Promise<void>;
+  startNext(): Promise<void>;
+  reorderUpcoming(itemId: string): Promise<void>;
   undo(): Promise<void>;
-  correctTransitionTime(transitionId: string, correctedAt: Date): Promise<boolean>;
+  correctTransitionTime(
+    transitionId: string,
+    expectedOccurredAt: Date,
+    correctedAt: Date,
+  ): Promise<boolean>;
+  editTimeline(replacements: EditTimelineCommand['replacements']): Promise<boolean>;
   skipDay(): Promise<boolean>;
   clearAllData(): Promise<boolean>;
   reload(): Promise<void>;
@@ -171,12 +179,22 @@ export const AppProvider = ({ services, bundledTimetables, children }: AppProvid
           if (!activeState) return null;
           return services.runs.advance(activeState, kind);
         }),
+      startNext: () =>
+        guard(async () => {
+          if (!activeState) return null;
+          return services.runs.startNext(activeState);
+        }),
+      reorderUpcoming: (itemId) =>
+        guard(async () => {
+          if (!activeState) return null;
+          return services.runs.reorderUpcoming(activeState, itemId);
+        }),
       undo: () =>
         guard(async () => {
           if (!activeState) return null;
           return services.runs.undo(activeState);
         }),
-      correctTransitionTime: async (transitionId, correctedAt) => {
+      correctTransitionTime: async (transitionId, expectedOccurredAt, correctedAt) => {
         if (inFlight.current || !activeState) return false;
         inFlight.current = true;
         setBusy(true);
@@ -185,8 +203,33 @@ export const AppProvider = ({ services, bundledTimetables, children }: AppProvid
             await services.runs.correctTransitionTime(
               activeState.run.id,
               transitionId,
+              expectedOccurredAt,
               correctedAt,
             ),
+          );
+          setNotice(null);
+          return true;
+        } catch (error) {
+          const quartz = toQuartzError(error);
+          if (isBlockingError(quartz)) {
+            setBlockingError(quartz);
+            setPhase('blocked');
+          } else {
+            setNotice(quartz.message);
+          }
+          return false;
+        } finally {
+          inFlight.current = false;
+          setBusy(false);
+        }
+      },
+      editTimeline: async (replacements) => {
+        if (inFlight.current || !activeState) return false;
+        inFlight.current = true;
+        setBusy(true);
+        try {
+          setActiveState(
+            await services.runs.editTimeline(activeState.run.id, replacements),
           );
           setNotice(null);
           return true;

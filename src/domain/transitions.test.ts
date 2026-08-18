@@ -270,8 +270,12 @@ describe('reconstruction of an invalid history', () => {
     expect(build((events) => [events[0]!, events[2]!])).toThrow(/not contiguous/);
   });
 
-  it('rejects an event that ends an item without starting the next', () => {
-    expect(build((events) => [events[0]!, events[1]!])).toThrow(/without starting the next one/);
+  it('accepts an event that ends an item before the next one starts', () => {
+    const driver = new RunDriver(simpleTimetable, START).finish(
+      at('2026-03-02T00:40:00.000Z'),
+    );
+    expect(driver.state.phase).toBe('between');
+    expect(driver.state.nextItem?.id).toBe('gym');
   });
 
   it('rejects an event for the wrong item', () => {
@@ -337,7 +341,53 @@ describe('reconstruction of an invalid history', () => {
           seq: 5,
         },
       ]),
-    ).toThrow(/must reverse a completed or skipped event/);
+    ).toThrow(/must reverse a transition that can be undone/);
+  });
+});
+
+describe('between tasks and today order', () => {
+  it('finishes, starts later, and supports two-step undo', () => {
+    const driver = new RunDriver(simpleTimetable, START)
+      .finish(at('2026-03-02T00:30:00.000Z'))
+      .startNext(at('2026-03-02T00:45:00.000Z'));
+
+    expect(driver.state.phase).toBe('running');
+    expect(driver.state.currentItem?.id).toBe('gym');
+    driver.undo(at('2026-03-02T00:46:00.000Z'));
+    expect(driver.state.phase).toBe('between');
+    driver.undo(at('2026-03-02T00:47:00.000Z'));
+    expect(driver.state.phase).toBe('running');
+    expect(driver.state.currentItem?.id).toBe('wake');
+  });
+
+  it('moves only an upcoming item into the next position', () => {
+    const driver = new RunDriver(simpleTimetable, START).reorder('breakfast');
+    expect(driver.state.orderedItems.map((item) => item.id)).toEqual([
+      'wake',
+      'breakfast',
+      'gym',
+    ]);
+    driver.next(at('2026-03-02T00:30:00.000Z'));
+    expect(driver.state.currentItem?.id).toBe('breakfast');
+    expect(() => driver.reorder('wake')).toThrow(/not started/);
+  });
+
+  it('separates a shared boundary into a valid gap atomically', () => {
+    const driver = new RunDriver(simpleTimetable, START).next(
+      at('2026-03-02T00:30:00.000Z'),
+    );
+    driver.edit(
+      [
+        {
+          eventId: driver.events[2]!.id,
+          expectedOccurredAt: driver.events[2]!.occurredAt,
+          occurredAt: at('2026-03-02T00:40:00.000Z'),
+        },
+      ],
+      at('2026-03-02T01:00:00.000Z'),
+    );
+    expect(driver.events[1]?.occurredAt.toISOString()).toBe('2026-03-02T00:30:00.000Z');
+    expect(driver.events[2]?.occurredAt.toISOString()).toBe('2026-03-02T00:40:00.000Z');
   });
 });
 

@@ -16,6 +16,9 @@ import { getLocalDate } from '../domain/time';
 import { toSummary } from '../domain/timetable';
 import {
   applyRunPatch,
+  planReorderRun,
+  planStartNext,
+  planTimelineEdit,
   planStartRun,
   planTransition,
   planTransitionTimeCorrection,
@@ -25,9 +28,12 @@ import {
 import type {
   CorrectTransitionTimeCommand,
   DayDecision,
+  EditTimelineCommand,
+  ReorderRunCommand,
   Run,
   RunEvent,
   SkipDayCommand,
+  StartNextCommand,
   Timetable,
   TimetableRef,
   TimetableSummary,
@@ -74,6 +80,9 @@ const asRun = (raw: unknown): Run | null => {
         : record.status === 'skipped'
           ? 'skipped'
           : 'active',
+    executionOrder: Array.isArray(record.executionOrder)
+      ? record.executionOrder.map(String)
+      : null,
   };
 };
 
@@ -532,6 +541,18 @@ export class IndexedDbRepository implements TimetableRepository {
     );
   }
 
+  startNext(command: StartNextCommand): Promise<void> {
+    return this.mutateRun(command.runId, (timetable, run, events) =>
+      planStartNext(timetable, run, events, command),
+    );
+  }
+
+  reorderRun(command: ReorderRunCommand): Promise<void> {
+    return this.mutateRun(command.runId, (timetable, run, events) =>
+      planReorderRun(timetable, run, events, command),
+    );
+  }
+
   correctTransitionTime(command: CorrectTransitionTimeCommand): Promise<void> {
     return this.database().then(
       (db) =>
@@ -579,6 +600,58 @@ export class IndexedDbRepository implements TimetableRepository {
                     events,
                     command,
                   );
+                  for (const event of planned.events) eventStore.put(event);
+                  if (planned.runPatch) runStore.put(applyRunPatch(run, planned.runPatch));
+                } catch (error) {
+                  failure = error;
+                  tx.abort();
+                }
+              };
+            };
+          };
+        }),
+    );
+  }
+
+  editTimeline(command: EditTimelineCommand): Promise<void> {
+    return this.database().then(
+      (db) =>
+        new Promise<void>((resolve, reject) => {
+          const tx = db.transaction([TIMETABLES, RUNS, EVENTS], 'readwrite');
+          let failure: unknown = null;
+          tx.oncomplete = () => (failure ? reject(failure) : resolve());
+          tx.onabort = () => reject(failure ?? storageError(tx.error));
+          tx.onerror = () => reject(failure ?? storageError(tx.error));
+          const runStore = tx.objectStore(RUNS);
+          const eventStore = tx.objectStore(EVENTS);
+          const runRequest = runStore.get(command.runId);
+          runRequest.onsuccess = () => {
+            const run = asRun(runRequest.result);
+            if (!run) {
+              failure = new QuartzError('not-found', `Run ${command.runId} does not exist.`);
+              tx.abort();
+              return;
+            }
+            const timetableRequest = tx
+              .objectStore(TIMETABLES)
+              .get([run.timetableId, run.timetableVersion]);
+            timetableRequest.onsuccess = () => {
+              const timetable = timetableRequest.result as Timetable | undefined;
+              if (!timetable) {
+                failure = new QuartzError(
+                  'corrupt-history',
+                  `Run ${run.id} references a timetable that is no longer stored.`,
+                );
+                tx.abort();
+                return;
+              }
+              const eventsRequest = eventStore.index('runId').getAll(run.id);
+              eventsRequest.onsuccess = () => {
+                try {
+                  const events = (eventsRequest.result as unknown[])
+                    .map(asEvent)
+                    .sort((a, b) => a.seq - b.seq);
+                  const planned = planTimelineEdit(timetable, run, events, command);
                   for (const event of planned.events) eventStore.put(event);
                   if (planned.runPatch) runStore.put(applyRunPatch(run, planned.runPatch));
                 } catch (error) {

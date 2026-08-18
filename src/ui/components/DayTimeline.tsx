@@ -1,4 +1,4 @@
-import { useLayoutEffect, useMemo, useRef } from 'react';
+import { Fragment, useLayoutEffect, useMemo, useRef } from 'react';
 
 import { buildRunReport } from '../../domain/analysis';
 import type { RunEvent, RunState } from '../../domain/types';
@@ -15,6 +15,7 @@ export interface DayTimelineProps {
   readonly now: Date;
   readonly elapsedMs?: number;
   readonly onEditTransition?: (transition: RunEvent) => void;
+  readonly onReorder?: (itemId: string) => void;
   readonly autoFocusCurrent?: boolean;
 }
 
@@ -25,6 +26,7 @@ export const DayTimeline = ({
   now,
   elapsedMs = 0,
   onEditTransition,
+  onReorder,
   autoFocusCurrent = false,
 }: DayTimelineProps) => {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -46,7 +48,11 @@ export const DayTimeline = ({
   const initialStart = state.effectiveEvents.find(
     (event) => event.seq === 1 && event.type === 'started',
   );
-  const markerIndex = report.observations.findIndex((observation, index) => {
+  const gaps = useMemo(
+    () => new Map(report.betweenTasks.map((gap) => [gap.afterItemId, gap])),
+    [report.betweenTasks],
+  );
+  const plannedMarkerIndex = report.observations.findIndex((observation, index) => {
     const value = now.getTime();
     const isLast = index === report.observations.length - 1;
     return (
@@ -55,6 +61,9 @@ export const DayTimeline = ({
         (isLast && value <= observation.plannedEndUtc.getTime()))
     );
   });
+  const markerIndex = report.reordered && state.phase === 'running'
+    ? state.currentIndex ?? -1
+    : plannedMarkerIndex;
 
   useLayoutEffect(() => {
     if (!autoFocusCurrent || !currentRef.current) return;
@@ -95,16 +104,29 @@ export const DayTimeline = ({
               : terminal
                 ? 'completed'
                 : 'upcoming';
-          const nowFraction = markerIndex === index ? instantFraction(observation, now) : null;
+          const nowFraction =
+            markerIndex !== index
+              ? null
+              : report.reordered && state.currentItemStartedAt
+                ? Math.min(
+                    1,
+                    Math.max(
+                      0,
+                      (now.getTime() - state.currentItemStartedAt.getTime()) /
+                        observation.plannedDurationMs,
+                    ),
+                  )
+                : instantFraction(observation, now);
           const isCurrentMarker = nowFraction !== null;
           const sectionHeight = timelineSectionHeight(observation.plannedDurationMs);
 
+          const gap = gaps.get(observation.item.id);
           return (
+            <Fragment key={observation.item.id}>
             <li
               className={`timeline-item timeline-item--${itemState}`}
-              key={observation.item.id}
               ref={itemState === 'current' ? currentRef : undefined}
-              style={{ height: `${sectionHeight}px` }}
+              style={{ minHeight: `${sectionHeight}px` }}
             >
               <span className="timeline-item__rail" aria-hidden="true">
                 <span className="timeline-item__node" />
@@ -117,6 +139,9 @@ export const DayTimeline = ({
                 <p className="timeline-item__planned">
                   Planned {observation.item.plannedStart}–{observation.item.plannedEnd}
                 </p>
+                {observation.reordered && (
+                  <p className="timeline-item__reordered">Order changed for today</p>
+                )}
                 {index === 0 && initialStart && onEditTransition && (
                   <button
                     type="button"
@@ -166,6 +191,17 @@ export const DayTimeline = ({
                     <span>Edit time</span>
                   </button>
                 )}
+                {itemState === 'upcoming' &&
+                  onReorder &&
+                  state.nextIndex !== index && (
+                    <button
+                      type="button"
+                      className="timeline-item__reorder"
+                      onClick={() => onReorder(observation.item.id)}
+                    >
+                      Do this next
+                    </button>
+                  )}
               </article>
               {isCurrentMarker && (
                 <div
@@ -177,6 +213,17 @@ export const DayTimeline = ({
                 </div>
               )}
             </li>
+            {gap && (
+              <li className="timeline-gap">
+                <span>Between tasks</span>
+                <strong>{formatStopwatch(gap.durationMs)}</strong>
+                <time>
+                  {formatTimeInZone(gap.startedAt, state.timetable.timezone)}–
+                  {formatTimeInZone(gap.endedAt, state.timetable.timezone)}
+                </time>
+              </li>
+            )}
+            </Fragment>
           );
         })}
       </ol>

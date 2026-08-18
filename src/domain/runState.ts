@@ -8,7 +8,7 @@
  */
 
 import { QuartzError } from './errors';
-import type { Run, RunEvent, RunState, Timetable } from './types';
+import type { Run, RunEvent, RunState, Timetable, TimetableItem } from './types';
 
 export const eventId = (runId: string, seq: number): string =>
   `${runId}#${String(seq).padStart(8, '0')}`;
@@ -49,8 +49,10 @@ const collectReversedTransitions = (sorted: readonly RunEvent[]): Set<string> =>
       corrupt(`Undo event ${event.id} references unknown event ${event.reversesEventId}`);
       return reversed;
     }
-    if (!isTerminal(target)) {
-      corrupt(`Undo event ${event.id} must reverse a completed or skipped event`);
+    const standaloneStart =
+      target.type === 'started' && target.seq > 1 && target.id === target.transitionId;
+    if (!isTerminal(target) && !standaloneStart) {
+      corrupt(`Undo event ${event.id} must reverse a transition that can be undone`);
     }
     if (target.id !== target.transitionId) {
       corrupt(`Undo event ${event.id} must reverse the first event of a transition`);
@@ -84,6 +86,27 @@ const assertWellFormed = (run: Run, sorted: readonly RunEvent[]): void => {
   });
 };
 
+export const resolveExecutionOrder = (
+  timetable: Timetable,
+  run: Run,
+): readonly TimetableItem[] => {
+  const originalIds = timetable.items.map((item) => item.id);
+  const order = run.executionOrder ?? originalIds;
+  if (
+    order.length !== originalIds.length ||
+    new Set(order).size !== order.length ||
+    order.some((id) => !originalIds.includes(id))
+  ) {
+    corrupt(`Run ${run.id} has an invalid execution order`);
+  }
+  const byId = new Map(timetable.items.map((item) => [item.id, item]));
+  return order.map((id) => {
+    const item = byId.get(id);
+    if (!item) corrupt(`Run ${run.id} references unknown item "${id}" in its execution order`);
+    return item;
+  });
+};
+
 /** Rebuild the current state of a run, or throw `corrupt-history`. */
 export const reconstructRunState = (
   timetable: Timetable,
@@ -99,6 +122,7 @@ export const reconstructRunState = (
 
   const sorted = sortEvents(events);
   assertWellFormed(run, sorted);
+  const orderedItems = resolveExecutionOrder(timetable, run);
 
   const reversed = collectReversedTransitions(sorted);
   const effectiveEvents = sorted.filter(
@@ -120,7 +144,7 @@ export const reconstructRunState = (
     }
     previousAt = event.occurredAt.getTime();
 
-    const item = timetable.items[index];
+    const item = orderedItems[index];
     if (!item) {
       corrupt(`Event ${event.id} refers to a position beyond the end of the timetable`);
       break;
@@ -148,21 +172,25 @@ export const reconstructRunState = (
   }
 
   let status: Run['status'];
+  let phase: RunState['phase'];
   let currentIndex: number | null;
+  let nextIndex: number | null;
 
   if (expecting === 'terminal') {
     status = 'active';
+    phase = 'running';
     currentIndex = index;
-  } else if (index === timetable.items.length) {
+    nextIndex = index + 1 < orderedItems.length ? index + 1 : null;
+  } else if (index === orderedItems.length) {
     status = 'completed';
+    phase = 'completed';
     currentIndex = null;
+    nextIndex = null;
   } else {
     status = 'active';
+    phase = 'between';
     currentIndex = null;
-    corrupt(
-      `Run ${run.id} ended item ${index} without starting the next one`,
-      ['Next and Skip must record both changes atomically.'],
-    );
+    nextIndex = index;
   }
 
   if (run.status === 'skipped') {
@@ -173,7 +201,9 @@ export const reconstructRunState = (
       corrupt(`Skipped run ${run.id} has no skip timestamp`);
     }
     status = 'skipped';
+    phase = 'completed';
     currentIndex = null;
+    nextIndex = null;
     currentItemStartedAt = null;
   } else if (status !== run.status) {
     corrupt(
@@ -187,8 +217,8 @@ export const reconstructRunState = (
     corrupt(`Run ${run.id} is active but has a completion timestamp`);
   }
 
-  const currentItem = currentIndex === null ? null : (timetable.items[currentIndex] ?? null);
-  const nextItem = currentIndex === null ? null : (timetable.items[currentIndex + 1] ?? null);
+  const currentItem = currentIndex === null ? null : (orderedItems[currentIndex] ?? null);
+  const nextItem = nextIndex === null ? null : (orderedItems[nextIndex] ?? null);
   const lastEvent = sorted[sorted.length - 1];
 
   return {
@@ -197,20 +227,29 @@ export const reconstructRunState = (
     events: sorted,
     effectiveEvents,
     status,
+    phase,
+    orderedItems,
     currentIndex,
     currentItem,
     currentItemStartedAt,
+    nextIndex,
     nextItem,
     canUndo: status !== 'skipped' && effectiveEvents.some(isTerminal),
     lastSeq: lastEvent ? lastEvent.seq : 0,
   };
 };
 
-/** The most recent Next or Skip that has not already been undone. */
+/** The most recent transition that can be undone. */
 export const findUndoTarget = (state: RunState): RunEvent | null => {
   for (let i = state.effectiveEvents.length - 1; i >= 0; i -= 1) {
     const event = state.effectiveEvents[i];
-    if (event && isTerminal(event)) return event;
+    if (
+      event &&
+      (isTerminal(event) ||
+        (event.type === 'started' && event.seq > 1 && event.id === event.transitionId))
+    ) {
+      return event;
+    }
   }
   return null;
 };

@@ -12,6 +12,7 @@ import { reconstructRunState } from '../domain/runState';
 import { getLocalDate } from '../domain/time';
 import type {
   DayDecision,
+  EditTimelineCommand,
   Run,
   RunState,
   TimetableRef,
@@ -80,6 +81,29 @@ export class RunService {
     return this.loadStateById(state.run.id);
   }
 
+  async startNext(state: RunState): Promise<RunState> {
+    if (state.phase !== 'between' || !state.nextItem) {
+      throw new QuartzError('stale-state', 'There is no task waiting to start.');
+    }
+    await this.repository.startNext({
+      runId: state.run.id,
+      itemId: state.nextItem.id,
+      occurredAt: this.clock.now(),
+      expectedSeq: state.lastSeq,
+    });
+    return this.loadStateById(state.run.id);
+  }
+
+  async reorderUpcoming(state: RunState, itemId: string): Promise<RunState> {
+    await this.repository.reorderRun({
+      runId: state.run.id,
+      itemId,
+      expectedSeq: state.lastSeq,
+      expectedOrder: state.orderedItems.map((item) => item.id),
+    });
+    return this.loadStateById(state.run.id);
+  }
+
   async undo(state: RunState): Promise<RunState> {
     await this.repository.undoLastTransition(state.run.id, this.clock.now());
     return this.loadStateById(state.run.id);
@@ -88,13 +112,29 @@ export class RunService {
   async correctTransitionTime(
     runId: string,
     transitionId: string,
+    expectedOccurredAt: Date,
     correctedAt: Date,
   ): Promise<RunState> {
     const state = await this.loadStateById(runId);
     await this.repository.correctTransitionTime({
       runId,
       transitionId,
+      expectedOccurredAt,
       correctedAt,
+      observedAt: this.clock.now(),
+      expectedSeq: state.lastSeq,
+    });
+    return this.loadStateById(runId);
+  }
+
+  async editTimeline(
+    runId: string,
+    replacements: EditTimelineCommand['replacements'],
+  ): Promise<RunState> {
+    const state = await this.loadStateById(runId);
+    await this.repository.editTimeline({
+      runId,
+      replacements,
       observedAt: this.clock.now(),
       expectedSeq: state.lastSeq,
     });

@@ -54,6 +54,15 @@ describe('parseBackupDocument', () => {
     );
   });
 
+  it('restores version 1 runs in original timetable order', () => {
+    const document = validDocument();
+    const runs = (document.runs as Record<string, unknown>[]).map(
+      ({ executionOrder: _executionOrder, ...run }) => run,
+    );
+    const parsed = parseBackupDocument({ ...document, version: 1, runs });
+    expect(parsed.runs[0]?.executionOrder).toBeNull();
+  });
+
   it('rejects a run whose timetable version is missing', () => {
     expect(() => parseBackupDocument({ ...validDocument(), timetables: [] })).toThrow(
       /not valid/,
@@ -70,7 +79,9 @@ describe('parseBackupDocument', () => {
 
   it('rejects an event history that cannot be reconstructed', () => {
     const document = validDocument();
-    const events = (document.events as Record<string, unknown>[]).slice(0, 2);
+    const events = (document.events as Record<string, unknown>[]).map((event, index) =>
+      index === 1 ? { ...event, type: 'started' } : event,
+    );
     expect(() => parseBackupDocument({ ...document, events })).toThrow(
       /cannot be reconstructed/,
     );
@@ -131,6 +142,6 @@ describe('BackupService', () => {
     const { repository } = await populatedRepository();
     const service = new BackupService(repository, { now: () => new Date('2026-03-02T04:05:06Z') });
 
-    expect(service.suggestedFileName()).toBe('quartz-backup-v1-2026-03-02T04-05-06.json');
+    expect(service.suggestedFileName()).toBe('quartz-backup-v2-2026-03-02T04-05-06.json');
   });
 });

@@ -1,12 +1,22 @@
 import { reconstructRunState } from '../domain/runState';
 import {
   applyRunPatch,
+  planReorderRun,
+  planStartNext,
   planStartRun,
+  planTimelineEdit,
   planTransition,
   planTransitionTimeCorrection,
   planUndo,
 } from '../domain/transitions';
-import type { Run, RunEvent, RunState, Timetable, TransitionKind } from '../domain/types';
+import type {
+  Run,
+  RunEvent,
+  RunState,
+  TimelineEventReplacement,
+  Timetable,
+  TransitionKind,
+} from '../domain/types';
 
 /**
  * Drives the pure planners without any storage.
@@ -57,6 +67,36 @@ export class RunDriver {
     return this.advance('skip', occurredAt);
   }
 
+  finish(occurredAt: Date): this {
+    return this.advance('finish', occurredAt);
+  }
+
+  startNext(occurredAt: Date): this {
+    const state = this.state;
+    if (!state.nextItem) throw new Error('run has no next item');
+    const planned = planStartNext(this.timetable, this.run, this.events, {
+      runId: this.run.id,
+      itemId: state.nextItem.id,
+      occurredAt,
+      expectedSeq: state.lastSeq,
+    });
+    this.events = [...this.events, ...planned.events];
+    this.run = applyRunPatch(this.run, planned.runPatch);
+    return this;
+  }
+
+  reorder(itemId: string): this {
+    const state = this.state;
+    const planned = planReorderRun(this.timetable, this.run, this.events, {
+      runId: this.run.id,
+      itemId,
+      expectedSeq: state.lastSeq,
+      expectedOrder: state.orderedItems.map((item) => item.id),
+    });
+    this.run = applyRunPatch(this.run, planned.runPatch);
+    return this;
+  }
+
   undo(occurredAt: Date): this {
     const planned = planUndo(this.timetable, this.run, this.events, occurredAt);
     this.events = [...this.events, ...planned.events];
@@ -65,15 +105,31 @@ export class RunDriver {
   }
 
   correct(transitionId: string, correctedAt: Date, observedAt = correctedAt): this {
+    const target = this.events.find((event) => event.id === transitionId);
+    if (!target) throw new Error('transition does not exist');
     const planned = planTransitionTimeCorrection(this.timetable, this.run, this.events, {
       runId: this.run.id,
       transitionId,
+      expectedOccurredAt: target.occurredAt,
       correctedAt,
       observedAt,
       expectedSeq: this.state.lastSeq,
     });
     const replacements = new Map(planned.events.map((event) => [event.id, event]));
     this.events = this.events.map((event) => replacements.get(event.id) ?? event);
+    this.run = applyRunPatch(this.run, planned.runPatch);
+    return this;
+  }
+
+  edit(replacements: readonly TimelineEventReplacement[], observedAt: Date): this {
+    const planned = planTimelineEdit(this.timetable, this.run, this.events, {
+      runId: this.run.id,
+      replacements,
+      observedAt,
+      expectedSeq: this.state.lastSeq,
+    });
+    const replacementMap = new Map(planned.events.map((event) => [event.id, event]));
+    this.events = this.events.map((event) => replacementMap.get(event.id) ?? event);
     this.run = applyRunPatch(this.run, planned.runPatch);
     return this;
   }

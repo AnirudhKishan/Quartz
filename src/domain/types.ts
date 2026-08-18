@@ -63,6 +63,8 @@ export interface Run {
   readonly startedAt: Date;
   readonly completedAt: Date | null;
   readonly status: RunStatus;
+  /** Today's execution order. Null means the timetable order for legacy runs. */
+  readonly executionOrder: readonly string[] | null;
 }
 
 export interface DayDecision {
@@ -102,7 +104,7 @@ export interface RunEvent {
   readonly seq: number;
 }
 
-export type TransitionKind = 'next' | 'skip';
+export type TransitionKind = 'next' | 'skip' | 'finish';
 
 /**
  * A guarded request to advance a run.
@@ -124,11 +126,41 @@ export interface CorrectTransitionTimeCommand {
   readonly runId: string;
   /** The initial started event ID, or the terminal event ID produced by Next or Skip. */
   readonly transitionId: string;
+  readonly expectedOccurredAt: Date;
   readonly correctedAt: Date;
   /** Current time when the correction is submitted; prevents future boundaries. */
   readonly observedAt: Date;
   readonly expectedSeq: number;
 }
+
+export interface StartNextCommand {
+  readonly runId: string;
+  readonly itemId: string;
+  readonly occurredAt: Date;
+  readonly expectedSeq: number;
+}
+
+export interface ReorderRunCommand {
+  readonly runId: string;
+  readonly itemId: string;
+  readonly expectedSeq: number;
+  readonly expectedOrder: readonly string[];
+}
+
+export interface TimelineEventReplacement {
+  readonly eventId: string;
+  readonly expectedOccurredAt: Date;
+  readonly occurredAt: Date;
+}
+
+export interface EditTimelineCommand {
+  readonly runId: string;
+  readonly replacements: readonly TimelineEventReplacement[];
+  readonly observedAt: Date;
+  readonly expectedSeq: number;
+}
+
+export type RunPhase = 'running' | 'between' | 'completed';
 
 /** Everything needed to render the active run screen. */
 export interface RunState {
@@ -138,10 +170,15 @@ export interface RunState {
   /** Events that still count, i.e. not reversed by an undo. */
   readonly effectiveEvents: readonly RunEvent[];
   readonly status: RunStatus;
-  /** Index into `timetable.items`; null once the run is completed. */
+  readonly phase: RunPhase;
+  /** Today's ordered items, which may differ from the timetable order. */
+  readonly orderedItems: readonly TimetableItem[];
+  /** Index into `orderedItems`; set only while an item is running. */
   readonly currentIndex: number | null;
   readonly currentItem: TimetableItem | null;
   readonly currentItemStartedAt: Date | null;
+  /** Index into `orderedItems` for the item that Next or Start will select. */
+  readonly nextIndex: number | null;
   readonly nextItem: TimetableItem | null;
   readonly canUndo: boolean;
   /** Highest `seq` present, used as the transition precondition. */

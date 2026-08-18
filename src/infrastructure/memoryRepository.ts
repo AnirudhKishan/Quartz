@@ -14,6 +14,9 @@ import { timetableKey, toSummary } from '../domain/timetable';
 import { getLocalDate } from '../domain/time';
 import {
   applyRunPatch,
+  planReorderRun,
+  planStartNext,
+  planTimelineEdit,
   planStartRun,
   planTransition,
   planTransitionTimeCorrection,
@@ -22,9 +25,12 @@ import {
 import type {
   CorrectTransitionTimeCommand,
   DayDecision,
+  EditTimelineCommand,
+  ReorderRunCommand,
   Run,
   RunEvent,
   SkipDayCommand,
+  StartNextCommand,
   Timetable,
   TimetableRef,
   TimetableSummary,
@@ -161,11 +167,41 @@ export class InMemoryRepository implements TimetableRepository {
     this.runs.set(run.id, applyRunPatch(run, planned.runPatch));
   }
 
+  async startNext(command: StartNextCommand): Promise<void> {
+    const run = this.requireRun(command.runId);
+    const timetable = await this.getTimetable(run.timetableId, run.timetableVersion);
+    const events = this.events.get(run.id) ?? [];
+    const planned = planStartNext(timetable, run, events, command);
+    this.events.set(run.id, [...events, ...planned.events]);
+    this.runs.set(run.id, applyRunPatch(run, planned.runPatch));
+  }
+
+  async reorderRun(command: ReorderRunCommand): Promise<void> {
+    const run = this.requireRun(command.runId);
+    const timetable = await this.getTimetable(run.timetableId, run.timetableVersion);
+    const events = this.events.get(run.id) ?? [];
+    const planned = planReorderRun(timetable, run, events, command);
+    this.runs.set(run.id, applyRunPatch(run, planned.runPatch));
+  }
+
   async correctTransitionTime(command: CorrectTransitionTimeCommand): Promise<void> {
     const run = this.requireRun(command.runId);
     const timetable = await this.getTimetable(run.timetableId, run.timetableVersion);
     const events = this.events.get(run.id) ?? [];
     const planned = planTransitionTimeCorrection(timetable, run, events, command);
+    const replacements = new Map(planned.events.map((event) => [event.id, event]));
+    this.events.set(
+      run.id,
+      events.map((event) => replacements.get(event.id) ?? event),
+    );
+    this.runs.set(run.id, applyRunPatch(run, planned.runPatch));
+  }
+
+  async editTimeline(command: EditTimelineCommand): Promise<void> {
+    const run = this.requireRun(command.runId);
+    const timetable = await this.getTimetable(run.timetableId, run.timetableVersion);
+    const events = this.events.get(run.id) ?? [];
+    const planned = planTimelineEdit(timetable, run, events, command);
     const replacements = new Map(planned.events.map((event) => [event.id, event]));
     this.events.set(
       run.id,

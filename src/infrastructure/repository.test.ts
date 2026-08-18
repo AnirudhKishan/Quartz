@@ -34,7 +34,7 @@ describe.each(adapters)('$name satisfies the repository contract', ({ create }) 
     await repository.saveTimetable(simpleTimetableV2);
   });
 
-  const advance = async (kind: 'next' | 'skip', occurredAt: Date) => {
+  const advance = async (kind: 'next' | 'skip' | 'finish', occurredAt: Date) => {
     const run = await repository.getActiveRun();
     if (!run) throw new Error('no active run');
     const events = await repository.getRunEvents(run.id);
@@ -147,6 +147,94 @@ describe.each(adapters)('$name satisfies the repository contract', ({ create }) 
     expect(events[1]?.occurredAt.getTime()).toBe(events[2]?.occurredAt.getTime());
   });
 
+  it('persists a today-only reorder and follows it on Next', async () => {
+    const run = await repository.createRun(ref, START);
+    const events = await repository.getRunEvents(run.id);
+    await repository.reorderRun({
+      runId: run.id,
+      itemId: 'breakfast',
+      expectedSeq: events.at(-1)!.seq,
+      expectedOrder: ['wake', 'gym', 'breakfast'],
+    });
+    await advance('next', new Date('2026-03-02T00:30:00.000Z'));
+
+    expect((await repository.getRun(run.id))?.executionOrder).toEqual([
+      'wake',
+      'breakfast',
+      'gym',
+    ]);
+    expect((await repository.getRunEvents(run.id)).at(-1)?.itemId).toBe('breakfast');
+  });
+
+  it('persists Finish and a later standalone Start', async () => {
+    const run = await repository.createRun(ref, START);
+    await advance('finish', new Date('2026-03-02T00:30:00.000Z'));
+    let events = await repository.getRunEvents(run.id);
+    await repository.startNext({
+      runId: run.id,
+      itemId: 'gym',
+      occurredAt: new Date('2026-03-02T00:45:00.000Z'),
+      expectedSeq: events.at(-1)!.seq,
+    });
+    events = await repository.getRunEvents(run.id);
+
+    expect(events.at(-1)).toMatchObject({ itemId: 'gym', type: 'started' });
+    expect(events.at(-1)?.transitionId).toBe(events.at(-1)?.id);
+  });
+
+  it('atomically separates a shared boundary into a gap', async () => {
+    const run = await repository.createRun(ref, START);
+    await advance('next', new Date('2026-03-02T00:30:00.000Z'));
+    const events = await repository.getRunEvents(run.id);
+    await repository.editTimeline({
+      runId: run.id,
+      replacements: [
+        {
+          eventId: events[2]!.id,
+          expectedOccurredAt: events[2]!.occurredAt,
+          occurredAt: new Date('2026-03-02T00:40:00.000Z'),
+        },
+      ],
+      observedAt: new Date('2026-03-02T01:00:00.000Z'),
+      expectedSeq: events.at(-1)!.seq,
+    });
+
+    const edited = await repository.getRunEvents(run.id);
+    expect(edited[1]?.occurredAt.toISOString()).toBe('2026-03-02T00:30:00.000Z');
+    expect(edited[2]?.occurredAt.toISOString()).toBe('2026-03-02T00:40:00.000Z');
+  });
+
+  it('rejects a timeline edit based on an overwritten boundary', async () => {
+    const run = await repository.createRun(ref, START);
+    await advance('next', new Date('2026-03-02T00:30:00.000Z'));
+    const events = await repository.getRunEvents(run.id);
+    const command = {
+      runId: run.id,
+      replacements: [
+        {
+          eventId: events[2]!.id,
+          expectedOccurredAt: events[2]!.occurredAt,
+          occurredAt: new Date('2026-03-02T00:35:00.000Z'),
+        },
+      ],
+      observedAt: new Date('2026-03-02T01:00:00.000Z'),
+      expectedSeq: events.at(-1)!.seq,
+    };
+    await repository.editTimeline(command);
+
+    await expect(
+      repository.editTimeline({
+        ...command,
+        replacements: [
+          {
+            ...command.replacements[0]!,
+            occurredAt: new Date('2026-03-02T00:40:00.000Z'),
+          },
+        ],
+      }),
+    ).rejects.toMatchObject({ code: 'stale-state' });
+  });
+
   it('rejects a repeated tap without writing anything', async () => {
     const run = await repository.createRun(ref, START);
     const command = {
@@ -251,6 +339,7 @@ describe.each(adapters)('$name satisfies the repository contract', ({ create }) 
     await repository.correctTransitionTime({
       runId: run.id,
       transitionId: events[1]!.transitionId,
+      expectedOccurredAt: events[1]!.occurredAt,
       correctedAt: new Date('2026-03-02T00:35:00.000Z'),
       observedAt: new Date('2026-03-02T01:00:00.000Z'),
       expectedSeq: events[events.length - 1]!.seq,

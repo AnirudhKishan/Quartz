@@ -263,6 +263,7 @@ body {
 
 .day-toolbar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
@@ -374,8 +375,7 @@ body {
 
 .timeline-item__card {
   position: relative;
-  height: calc(100% - 0.55rem);
-  overflow: hidden;
+  min-height: calc(100% - 0.55rem);
   padding: 0.75rem 0.85rem;
   border: 1px solid var(--border);
   border-radius: 0.85rem;
@@ -384,18 +384,18 @@ body {
 
 .timeline-item__heading {
   display: flex;
-  align-items: center;
+  flex-wrap: wrap;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 0.5rem;
 }
 
 .timeline-item__heading h2 {
   margin: 0;
-  overflow: hidden;
+  min-width: min(12rem, 100%);
+  overflow-wrap: anywhere;
   font-size: 1rem;
   line-height: 1.2;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .timeline-item__state {
@@ -428,9 +428,6 @@ body {
 }
 
 .timeline-item__boundary {
-  position: absolute;
-  right: 0.65rem;
-  bottom: 0.55rem;
   display: inline-flex;
   gap: 0.45rem;
   padding: 0.28rem 0.55rem;
@@ -442,10 +439,71 @@ body {
   font-size: 0.7rem;
   font-variant-numeric: tabular-nums;
   cursor: pointer;
+  margin-top: 0.5rem;
 }
 
 .timeline-item__boundary span {
   font-weight: 700;
+}
+
+.timeline-item__reordered {
+  margin: 0.35rem 0 0;
+  color: var(--warn);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.timeline-item__reorder {
+  display: block;
+  width: 100%;
+  min-height: 2.75rem;
+  margin-top: 0.55rem;
+  border: 1px solid var(--accent);
+  border-radius: 0.7rem;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.timeline-gap {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0.15rem 0.75rem;
+  margin: 0 0 0.55rem 3.35rem;
+  padding: 0.65rem 0.8rem;
+  border: 1px dashed var(--warn);
+  border-radius: 0.75rem;
+  background: #2a2110;
+  color: #f0d59b;
+  font-size: 0.78rem;
+}
+
+.timeline-gap time {
+  grid-column: 1 / -1;
+  color: #c49b45;
+}
+
+.between-summary {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin-top: 0.75rem;
+  padding: 0.8rem;
+  border: 1px solid var(--warn);
+  border-radius: var(--radius);
+  background: #2a2110;
+  color: #f0d59b;
+}
+
+.between-summary strong {
+  font-size: 1.55rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.between-summary small {
+  color: #c49b45;
 }
 
 .timeline-item--completed .timeline-item__card {
@@ -557,6 +615,28 @@ body {
   font-size: 1.25rem;
 }
 
+.sticky-actions--single {
+  grid-template-columns: 1fr;
+}
+
+@media (max-width: 25rem) {
+  .timeline-item {
+    padding-left: 2.55rem;
+  }
+
+  .timeline-item__rail {
+    left: 1rem;
+  }
+
+  .timeline-gap {
+    margin-left: 2.55rem;
+  }
+
+  .timeline-item__actual {
+    overflow-wrap: anywhere;
+  }
+}
+
 .completion-actions {
   padding-top: 0.75rem;
 }
@@ -574,6 +654,10 @@ body {
   border-radius: 0.8rem;
   background: var(--surface-raised);
   box-shadow: 0 10px 28px rgb(0 0 0 / 38%);
+}
+
+.undo-toast--between {
+  bottom: calc(10.5rem + env(safe-area-inset-bottom));
 }
 
 .undo-toast .link {
@@ -658,6 +742,184 @@ body {
   margin: 0.45rem 0 0;
   color: var(--muted);
   font-size: 0.78rem;
+}
+
+.report-timeline-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.timeline-editor {
+  margin-top: 0.5rem;
+}
+
+.timeline-editor__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.timeline-editor__header h2,
+.timeline-editor__segment h3 {
+  margin: 0;
+}
+
+.timeline-editor__header p,
+.timeline-editor__segment p {
+  margin: 0.25rem 0 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.timeline-editor__header .button {
+  width: auto;
+  margin: 0;
+}
+
+.timeline-editor__segments {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.timeline-editor__segment {
+  padding: 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.timeline-editor__segment-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.timeline-editor__segment-heading span {
+  flex: none;
+  color: var(--accent);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.boundary-control {
+  margin-top: 0.75rem;
+}
+
+.boundary-control__heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.boundary-control__heading details {
+  position: relative;
+}
+
+.boundary-control__heading summary {
+  padding: 0.3rem 0.55rem;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  color: var(--accent);
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+  list-style: none;
+}
+
+.boundary-control__heading input[type='datetime-local'] {
+  position: absolute;
+  z-index: 20;
+  top: 2.25rem;
+  right: 0;
+  width: 16rem;
+  max-width: calc(100vw - 3rem);
+  padding: 0.65rem;
+  border: 1px solid var(--accent);
+  border-radius: 0.65rem;
+  background: var(--bg);
+  color: var(--text);
+  color-scheme: dark;
+  font: inherit;
+}
+
+.boundary-control__range {
+  width: 100%;
+  min-height: 2.75rem;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: grab;
+}
+
+.boundary-control__range:active {
+  cursor: grabbing;
+}
+
+.timeline-editor__add-gap {
+  width: 100%;
+  min-height: 2.75rem;
+  border: 1px dashed var(--warn);
+  border-radius: 0.7rem;
+  background: transparent;
+  color: var(--warn);
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.timeline-editor__gap {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-top: 0.7rem;
+  padding: 0.6rem 0.7rem;
+  border: 1px dashed var(--warn);
+  border-radius: 0.7rem;
+  background: #2a2110;
+  color: #f0d59b;
+  font-size: 0.75rem;
+}
+
+.timeline-editor__gap span {
+  color: #c49b45;
+  font-variant-numeric: tabular-nums;
+}
+
+.timeline-editor__footer {
+  position: sticky;
+  z-index: 12;
+  bottom: 0;
+  display: grid;
+  grid-template-columns: 1fr minmax(9rem, 1fr);
+  gap: 0.75rem;
+  align-items: center;
+  margin-top: 0.75rem;
+  padding: 0.75rem 0 calc(0.4rem + env(safe-area-inset-bottom));
+  border-top: 1px solid var(--border);
+  background: rgb(13 17 23 / 96%);
+}
+
+.timeline-editor__footer div {
+  display: flex;
+  flex-direction: column;
+  font-size: 0.75rem;
+}
+
+.timeline-editor__footer span {
+  color: var(--muted);
+}
+
+.timeline-editor__footer .button {
+  margin: 0;
 }
 
 /* Reports */

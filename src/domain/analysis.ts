@@ -83,6 +83,16 @@ export interface ItemObservation extends PlannedItem {
   readonly durationDeviationMs: number | null;
   /** Overrun only. Skipped items contribute zero and never offset an overrun. */
   readonly positiveDurationDeviationMs: number;
+  readonly executionIndex: number;
+  readonly reordered: boolean;
+}
+
+export interface BetweenTaskObservation {
+  readonly afterItemId: string;
+  readonly beforeItemId: string;
+  readonly startedAt: Date;
+  readonly endedAt: Date;
+  readonly durationMs: number;
 }
 
 interface ActualRecord {
@@ -138,6 +148,9 @@ export interface RunReport {
   readonly measuredCount: number;
   readonly skipRate: number;
   readonly totalPositiveDurationDeviationMs: number;
+  readonly betweenTasks: readonly BetweenTaskObservation[];
+  readonly totalBetweenTasksMs: number;
+  readonly reordered: boolean;
 }
 
 export const buildRunReport = (
@@ -147,9 +160,12 @@ export const buildRunReport = (
 ): RunReport => {
   const state = reconstructRunState(timetable, run, events);
   const planned = computePlannedSchedule(timetable, run.localDate);
+  const plannedById = new Map(planned.map((item) => [item.item.id, item]));
   const actuals = collectActuals(timetable, state.effectiveEvents);
 
-  const observations: ItemObservation[] = planned.map((plan) => {
+  const observations: ItemObservation[] = state.orderedItems.map((item, executionIndex) => {
+    const plan = plannedById.get(item.id);
+    if (!plan) throw new Error(`Missing planned item ${item.id}`);
     const actual = actuals.get(plan.item.id) ?? {
       start: null,
       end: null,
@@ -158,8 +174,9 @@ export const buildRunReport = (
     };
 
     const measurable = actual.reached && !actual.skipped;
+    const reordered = executionIndex !== plan.index;
     const startDeviationMs =
-      measurable && actual.start
+      measurable && actual.start && !reordered
         ? actual.start.getTime() - plan.plannedStartUtc.getTime()
         : null;
     const actualDurationMs =
@@ -184,7 +201,25 @@ export const buildRunReport = (
       durationDeviationMs,
       positiveDurationDeviationMs:
         durationDeviationMs !== null && durationDeviationMs > 0 ? durationDeviationMs : 0,
+      executionIndex,
+      reordered,
     };
+  });
+
+  const betweenTasks: BetweenTaskObservation[] = [];
+  state.effectiveEvents.forEach((event, index) => {
+    if (event.type !== 'completed' && event.type !== 'skipped') return;
+    const next = state.effectiveEvents[index + 1];
+    if (!next || next.type !== 'started') return;
+    const durationMs = next.occurredAt.getTime() - event.occurredAt.getTime();
+    if (durationMs <= 0) return;
+    betweenTasks.push({
+      afterItemId: event.itemId,
+      beforeItemId: next.itemId,
+      startedAt: event.occurredAt,
+      endedAt: next.occurredAt,
+      durationMs,
+    });
   });
 
   const firstPlanned = planned[0];
@@ -213,6 +248,9 @@ export const buildRunReport = (
       (total, o) => total + o.positiveDurationDeviationMs,
       0,
     ),
+    betweenTasks,
+    totalBetweenTasksMs: betweenTasks.reduce((total, gap) => total + gap.durationMs, 0),
+    reordered: observations.some((observation) => observation.reordered),
   };
 };
 

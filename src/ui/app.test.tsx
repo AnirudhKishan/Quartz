@@ -128,6 +128,62 @@ describe('active run screen', () => {
     expect(screen.getByText('10m 00s late')).toBeInTheDocument();
   });
 
+  it('reorders only the remaining tasks for today', async () => {
+    const { repository } = await startDay();
+
+    const breakfastBefore = screen.getByRole('heading', { name: 'Breakfast' }).closest('li')!;
+    await user().click(within(breakfastBefore).getByRole('button', { name: 'Do this next' }));
+
+    await waitFor(async () =>
+      expect((await repository.getActiveRun())?.executionOrder).toEqual([
+        'wake',
+        'breakfast',
+        'gym',
+      ]),
+    );
+    const cards = screen.getAllByRole('listitem');
+    expect(within(cards[1]!).getByRole('heading')).toHaveTextContent('Breakfast');
+  });
+
+  it('finishes into a timed gap and starts the next task later', async () => {
+    const { clock, repository } = await startDay();
+    clock.advanceMinutes(30);
+
+    await user().click(screen.getByRole('button', { name: 'Finish' }));
+    expect((await screen.findAllByText('Between tasks')).length).toBeGreaterThan(0);
+    expect(screen.getByRole('button', { name: 'Start Gym' })).toBeVisible();
+
+    clock.advanceMinutes(15);
+    await user().click(screen.getByRole('button', { name: 'Start Gym' }));
+    expect(await screen.findByText('Gym in progress')).toBeInTheDocument();
+    const run = await repository.getActiveRun();
+    const events = await repository.getRunEvents(run!.id);
+    expect(events[1]?.occurredAt.toISOString()).toBe('2026-03-02T01:00:00.000Z');
+    expect(events[2]?.occurredAt.toISOString()).toBe('2026-03-02T01:15:00.000Z');
+  });
+
+  it('creates and saves a between-task gap from the timeline editor', async () => {
+    const { clock, repository } = await startDay();
+    clock.advanceMinutes(30);
+    await user().click(screen.getByRole('button', { name: 'Next' }));
+    await screen.findByText('Gym in progress');
+    clock.advanceMinutes(10);
+
+    await user().click(screen.getByRole('button', { name: 'Edit timeline' }));
+    expect(screen.getByRole('heading', { name: 'Editing actual timeline' })).toBeVisible();
+    await user().click(screen.getByRole('button', { name: 'Add between tasks' }));
+    await user().click(screen.getByRole('button', { name: 'Save changes' }));
+
+    await waitFor(() =>
+      expect(
+        screen.queryByRole('heading', { name: 'Editing actual timeline' }),
+      ).not.toBeInTheDocument(),
+    );
+    const run = await repository.getActiveRun();
+    const events = await repository.getRunEvents(run!.id);
+    expect(events[2]!.occurredAt.getTime() - events[1]!.occurredAt.getTime()).toBe(5 * 60_000);
+  });
+
   it('undoes the last transition and restores the original start of the item', async () => {
     const { clock } = await startDay();
 
@@ -151,7 +207,8 @@ describe('active run screen', () => {
     const { clock } = await startDay();
 
     clock.advanceMinutes(30);
-    await user().click(screen.getByRole('button', { name: 'Skip' }));
+    await user().click(screen.getByText('More actions'));
+    await user().click(screen.getByRole('button', { name: 'Skip current task' }));
 
     expect(await screen.findByText('Gym in progress')).toBeInTheDocument();
     expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
@@ -210,7 +267,7 @@ describe('active run screen', () => {
     await user().click(screen.getByRole('button', { name: 'Next' }));
 
     await waitFor(() => expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled());
-    expect(screen.getByRole('button', { name: 'Skip' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Finish' })).toBeDisabled();
 
     gate.release();
     expect(await screen.findByText('Gym in progress')).toBeInTheDocument();
