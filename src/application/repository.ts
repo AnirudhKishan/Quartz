@@ -7,14 +7,17 @@
 
 import type { BackupData } from '../domain/backup';
 import type {
-  CorrectTransitionTimeCommand,
   DayDecision,
   EditTimelineCommand,
+  EndPausedCommand,
+  PauseCommand,
   ReorderRunCommand,
+  ResumeCommand,
   Run,
   RunEvent,
   SkipDayCommand,
   StartNextCommand,
+  StartUnplannedCommand,
   Timetable,
   TimetableRef,
   TimetableSummary,
@@ -41,9 +44,11 @@ export interface TimetableRepository {
   /** Applies a guarded Next or Skip as one atomic write. */
   appendTransition(command: TransitionCommand): Promise<void>;
   startNext(command: StartNextCommand): Promise<void>;
+  startUnplanned(command: StartUnplannedCommand): Promise<void>;
+  pause(command: PauseCommand): Promise<void>;
+  resume(command: ResumeCommand): Promise<void>;
+  endPaused(command: EndPausedCommand): Promise<void>;
   reorderRun(command: ReorderRunCommand): Promise<void>;
-  /** Atomically replaces an initial start or both timestamps in an effective transition. */
-  correctTransitionTime(command: CorrectTransitionTimeCommand): Promise<void>;
   /** Atomically replaces every changed timestamp in one timeline-edit draft. */
   editTimeline(command: EditTimelineCommand): Promise<void>;
   undoLastTransition(runId: string, occurredAt: Date): Promise<void>;

@@ -12,7 +12,7 @@ import { assertUniqueVersions, parseTimetable, timetableKey } from './timetable'
 import type { Run, RunEvent, Timetable } from './types';
 
 export const BACKUP_FORMAT = 'quartz.backup';
-export const BACKUP_VERSION = 2;
+export const BACKUP_VERSION = 3;
 
 export interface BackupData {
   readonly timetables: readonly Timetable[];
@@ -60,7 +60,7 @@ export const createBackupDocument = (data: BackupData, exportedAt: Date): unknow
   })),
 });
 
-const EVENT_TYPES = new Set(['started', 'completed', 'skipped', 'undo']);
+const EVENT_TYPES = new Set(['started', 'completed', 'skipped', 'paused', 'ended', 'undo']);
 
 /**
  * Validate an untrusted backup document completely.
@@ -81,7 +81,7 @@ export const parseBackupDocument = (raw: unknown): BackupData => {
       [`Expected format "${BACKUP_FORMAT}" but found ${JSON.stringify(raw.format)}.`],
     );
   }
-  if (raw.version !== 1 && raw.version !== BACKUP_VERSION) {
+  if (raw.version !== BACKUP_VERSION) {
     throw new QuartzError(
       'invalid-backup',
       `Unsupported backup version ${String(raw.version)}.`,
@@ -143,21 +143,15 @@ export const parseBackupDocument = (raw: unknown): BackupData => {
         ? null
         : parseInstant(entry.completedAt, `${at}.completedAt`, errors);
     const executionOrder =
-      raw.version === 1 || entry.executionOrder === undefined
-        ? null
-        : entry.executionOrder === null
-          ? null
-          : Array.isArray(entry.executionOrder) &&
-              entry.executionOrder.every((itemId) => typeof itemId === 'string')
-            ? entry.executionOrder
-            : null;
+      Array.isArray(entry.executionOrder) &&
+      entry.executionOrder.every((itemId) => typeof itemId === 'string')
+        ? entry.executionOrder
+        : null;
     if (
-      raw.version === BACKUP_VERSION &&
-      entry.executionOrder !== null &&
       (!Array.isArray(entry.executionOrder) ||
         !entry.executionOrder.every((itemId) => typeof itemId === 'string'))
     ) {
-      errors.push(`${at}.executionOrder must be an array of item IDs or null`);
+      errors.push(`${at}.executionOrder must be an array of planned item IDs`);
     }
 
     if (
@@ -202,7 +196,7 @@ export const parseBackupDocument = (raw: unknown): BackupData => {
     }
     if (typeof itemId !== 'string') errors.push(`${at}.itemId must be a string`);
     if (typeof type !== 'string' || !EVENT_TYPES.has(type)) {
-      errors.push(`${at}.type must be started, completed, skipped, or undo`);
+      errors.push(`${at}.type is not a supported run event type`);
     }
     if (typeof transitionId !== 'string') errors.push(`${at}.transitionId must be a string`);
     if (typeof seq !== 'number' || !Number.isInteger(seq) || seq < 1) {
@@ -210,6 +204,30 @@ export const parseBackupDocument = (raw: unknown): BackupData => {
     }
     if (reversesEventId !== null && typeof reversesEventId !== 'string') {
       errors.push(`${at}.reversesEventId must be a string or null`);
+    }
+    let inserted: RunEvent['inserted'] = null;
+    if (entry.inserted !== null && entry.inserted !== undefined) {
+      if (!isRecord(entry.inserted)) {
+        errors.push(`${at}.inserted must be an object or null`);
+      } else {
+        const { label, origin, resumeTargetId } = entry.inserted;
+        if (typeof label !== 'string' || label.trim().length === 0) {
+          errors.push(`${at}.inserted.label must be a non-empty string`);
+        }
+        if (origin !== 'unplanned' && origin !== 'pause') {
+          errors.push(`${at}.inserted.origin must be "unplanned" or "pause"`);
+        }
+        if (resumeTargetId !== null && typeof resumeTargetId !== 'string') {
+          errors.push(`${at}.inserted.resumeTargetId must be a string or null`);
+        }
+        if (
+          typeof label === 'string' &&
+          (origin === 'unplanned' || origin === 'pause') &&
+          (resumeTargetId === null || typeof resumeTargetId === 'string')
+        ) {
+          inserted = { label, origin, resumeTargetId };
+        }
+      }
     }
 
     const occurredAt = parseInstant(entry.occurredAt, `${at}.occurredAt`, errors);
@@ -220,6 +238,7 @@ export const parseBackupDocument = (raw: unknown): BackupData => {
         itemId: itemId as string,
         type: type as RunEvent['type'],
         occurredAt,
+        inserted,
         reversesEventId: (reversesEventId ?? null) as string | null,
         transitionId: transitionId as string,
         seq: seq as number,

@@ -81,7 +81,21 @@ export interface SkipDayCommand {
   readonly activeRunId: string | null;
 }
 
-export type RunEventType = 'started' | 'completed' | 'skipped' | 'undo';
+export type InsertedOccurrenceOrigin = 'unplanned' | 'pause';
+
+export interface InsertedOccurrenceDefinition {
+  readonly label: string;
+  readonly origin: InsertedOccurrenceOrigin;
+  readonly resumeTargetId: string | null;
+}
+
+export type RunEventType =
+  | 'started'
+  | 'completed'
+  | 'skipped'
+  | 'paused'
+  | 'ended'
+  | 'undo';
 
 /**
  * A record of something that actually happened.
@@ -94,9 +108,12 @@ export interface RunEvent {
   /** Unique and monotonically sortable within a run. */
   readonly id: string;
   readonly runId: string;
+  /** Planned item ID, or the unique occurrence ID of an inserted activity. */
   readonly itemId: string;
   readonly type: RunEventType;
   readonly occurredAt: Date;
+  /** Present only on the first start of an inserted occurrence. */
+  readonly inserted?: InsertedOccurrenceDefinition | null;
   /** For `undo` events, the terminal event whose transition is reversed. */
   readonly reversesEventId: string | null;
   readonly transitionId: string;
@@ -121,22 +138,41 @@ export interface TransitionCommand {
   readonly expectedSeq: number;
 }
 
-/** A guarded replacement for the initial start or a shared Next/Skip timestamp. */
-export interface CorrectTransitionTimeCommand {
-  readonly runId: string;
-  /** The initial started event ID, or the terminal event ID produced by Next or Skip. */
-  readonly transitionId: string;
-  readonly expectedOccurredAt: Date;
-  readonly correctedAt: Date;
-  /** Current time when the correction is submitted; prevents future boundaries. */
-  readonly observedAt: Date;
-  readonly expectedSeq: number;
-}
-
 export interface StartNextCommand {
   readonly runId: string;
   readonly itemId: string;
   readonly occurredAt: Date;
+  readonly expectedSeq: number;
+}
+
+export interface StartUnplannedCommand {
+  readonly runId: string;
+  readonly label: string;
+  readonly occurredAt: Date;
+  readonly expectedItemId: string;
+  readonly expectedSeq: number;
+}
+
+export interface PauseCommand {
+  readonly runId: string;
+  readonly occurredAt: Date;
+  readonly expectedItemId: string;
+  readonly expectedSeq: number;
+}
+
+export interface ResumeCommand {
+  readonly runId: string;
+  readonly occurredAt: Date;
+  readonly expectedItemId: string;
+  readonly expectedResumeTargetId: string;
+  readonly expectedSeq: number;
+}
+
+export interface EndPausedCommand {
+  readonly runId: string;
+  readonly occurredAt: Date;
+  readonly expectedItemId: string;
+  readonly expectedResumeTargetId: string;
   readonly expectedSeq: number;
 }
 
@@ -160,7 +196,27 @@ export interface EditTimelineCommand {
   readonly expectedSeq: number;
 }
 
-export type RunPhase = 'running' | 'between' | 'completed';
+export type RunPhase = 'running' | 'paused' | 'between' | 'completed';
+
+export interface TrackedOccurrence {
+  readonly id: string;
+  readonly label: string;
+  readonly kind: 'planned' | 'inserted';
+  readonly plannedItemId: string | null;
+  readonly insertedOrigin: InsertedOccurrenceOrigin | null;
+  readonly resumeTargetId: string | null;
+}
+
+export interface ActivitySegment {
+  /** The segment's started event is its stable identity. */
+  readonly id: string;
+  readonly occurrenceId: string;
+  readonly startedAt: Date;
+  readonly endedAt: Date | null;
+  readonly startEventId: string;
+  readonly endEventId: string | null;
+  readonly endType: 'completed' | 'skipped' | 'paused' | null;
+}
 
 /** Everything needed to render the active run screen. */
 export interface RunState {
@@ -171,6 +227,15 @@ export interface RunState {
   readonly effectiveEvents: readonly RunEvent[];
   readonly status: RunStatus;
   readonly phase: RunPhase;
+  /** Planned and effective inserted occurrences known to this run. */
+  readonly occurrences: readonly TrackedOccurrence[];
+  /** Actual active intervals in chronological order. */
+  readonly segments: readonly ActivitySegment[];
+  readonly currentActivity: TrackedOccurrence | null;
+  readonly currentActivityStartedAt: Date | null;
+  readonly resumeTarget: TrackedOccurrence | null;
+  readonly completedOccurrenceIds: readonly string[];
+  readonly skippedOccurrenceIds: readonly string[];
   /** Today's ordered items, which may differ from the timetable order. */
   readonly orderedItems: readonly TimetableItem[];
   /** Index into `orderedItems`; set only while an item is running. */

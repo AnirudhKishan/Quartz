@@ -68,14 +68,69 @@ export class RunService {
    * second transition.
    */
   async advance(state: RunState, kind: TransitionKind): Promise<RunState> {
-    if (!state.currentItem) {
+    if (!state.currentActivity) {
       throw new QuartzError('run-completed', 'This run has already been completed.');
     }
     await this.repository.appendTransition({
       runId: state.run.id,
       kind,
       occurredAt: this.clock.now(),
-      expectedItemId: state.currentItem.id,
+      expectedItemId: state.currentActivity.id,
+      expectedSeq: state.lastSeq,
+    });
+    return this.loadStateById(state.run.id);
+  }
+
+  async startUnplanned(state: RunState, label: string): Promise<RunState> {
+    if (!state.currentActivity) {
+      throw new QuartzError('stale-state', 'There is no current task to finish.');
+    }
+    await this.repository.startUnplanned({
+      runId: state.run.id,
+      label,
+      occurredAt: this.clock.now(),
+      expectedItemId: state.currentActivity.id,
+      expectedSeq: state.lastSeq,
+    });
+    return this.loadStateById(state.run.id);
+  }
+
+  async pause(state: RunState): Promise<RunState> {
+    if (!state.currentActivity) {
+      throw new QuartzError('stale-state', 'There is no current task to pause.');
+    }
+    await this.repository.pause({
+      runId: state.run.id,
+      occurredAt: this.clock.now(),
+      expectedItemId: state.currentActivity.id,
+      expectedSeq: state.lastSeq,
+    });
+    return this.loadStateById(state.run.id);
+  }
+
+  async resume(state: RunState): Promise<RunState> {
+    if (!state.currentActivity || !state.resumeTarget) {
+      throw new QuartzError('stale-state', 'There is no paused task to resume.');
+    }
+    await this.repository.resume({
+      runId: state.run.id,
+      occurredAt: this.clock.now(),
+      expectedItemId: state.currentActivity.id,
+      expectedResumeTargetId: state.resumeTarget.id,
+      expectedSeq: state.lastSeq,
+    });
+    return this.loadStateById(state.run.id);
+  }
+
+  async endPaused(state: RunState): Promise<RunState> {
+    if (!state.currentActivity || !state.resumeTarget) {
+      throw new QuartzError('stale-state', 'There is no paused task to end.');
+    }
+    await this.repository.endPaused({
+      runId: state.run.id,
+      occurredAt: this.clock.now(),
+      expectedItemId: state.currentActivity.id,
+      expectedResumeTargetId: state.resumeTarget.id,
       expectedSeq: state.lastSeq,
     });
     return this.loadStateById(state.run.id);
@@ -107,24 +162,6 @@ export class RunService {
   async undo(state: RunState): Promise<RunState> {
     await this.repository.undoLastTransition(state.run.id, this.clock.now());
     return this.loadStateById(state.run.id);
-  }
-
-  async correctTransitionTime(
-    runId: string,
-    transitionId: string,
-    expectedOccurredAt: Date,
-    correctedAt: Date,
-  ): Promise<RunState> {
-    const state = await this.loadStateById(runId);
-    await this.repository.correctTransitionTime({
-      runId,
-      transitionId,
-      expectedOccurredAt,
-      correctedAt,
-      observedAt: this.clock.now(),
-      expectedSeq: state.lastSeq,
-    });
-    return this.loadStateById(runId);
   }
 
   async editTimeline(

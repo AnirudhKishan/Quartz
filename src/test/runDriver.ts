@@ -1,12 +1,15 @@
 import { reconstructRunState } from '../domain/runState';
 import {
   applyRunPatch,
+  planEndPaused,
+  planPause,
   planReorderRun,
+  planResume,
   planStartNext,
   planStartRun,
+  planStartUnplanned,
   planTimelineEdit,
   planTransition,
-  planTransitionTimeCorrection,
   planUndo,
 } from '../domain/transitions';
 import type {
@@ -45,13 +48,72 @@ export class RunDriver {
   /** Advance using the preconditions the UI would have observed. */
   advance(kind: TransitionKind, occurredAt: Date): this {
     const state = this.state;
-    const currentItem = state.currentItem;
+    const currentItem = state.currentActivity;
     if (!currentItem) throw new Error('run has no current item');
     const planned = planTransition(this.timetable, this.run, this.events, {
       runId: this.run.id,
       kind,
       occurredAt,
       expectedItemId: currentItem.id,
+      expectedSeq: state.lastSeq,
+    });
+    this.events = [...this.events, ...planned.events];
+    this.run = applyRunPatch(this.run, planned.runPatch);
+    return this;
+  }
+
+  startUnplanned(label: string, occurredAt: Date): this {
+    const state = this.state;
+    if (!state.currentActivity) throw new Error('run has no current item');
+    const planned = planStartUnplanned(this.timetable, this.run, this.events, {
+      runId: this.run.id,
+      label,
+      occurredAt,
+      expectedItemId: state.currentActivity.id,
+      expectedSeq: state.lastSeq,
+    });
+    this.events = [...this.events, ...planned.events];
+    this.run = applyRunPatch(this.run, planned.runPatch);
+    return this;
+  }
+
+  pause(occurredAt: Date): this {
+    const state = this.state;
+    if (!state.currentActivity) throw new Error('run has no current item');
+    const planned = planPause(this.timetable, this.run, this.events, {
+      runId: this.run.id,
+      occurredAt,
+      expectedItemId: state.currentActivity.id,
+      expectedSeq: state.lastSeq,
+    });
+    this.events = [...this.events, ...planned.events];
+    this.run = applyRunPatch(this.run, planned.runPatch);
+    return this;
+  }
+
+  resume(occurredAt: Date): this {
+    const state = this.state;
+    if (!state.currentActivity || !state.resumeTarget) throw new Error('run is not paused');
+    const planned = planResume(this.timetable, this.run, this.events, {
+      runId: this.run.id,
+      occurredAt,
+      expectedItemId: state.currentActivity.id,
+      expectedResumeTargetId: state.resumeTarget.id,
+      expectedSeq: state.lastSeq,
+    });
+    this.events = [...this.events, ...planned.events];
+    this.run = applyRunPatch(this.run, planned.runPatch);
+    return this;
+  }
+
+  endPaused(occurredAt: Date): this {
+    const state = this.state;
+    if (!state.currentActivity || !state.resumeTarget) throw new Error('run is not paused');
+    const planned = planEndPaused(this.timetable, this.run, this.events, {
+      runId: this.run.id,
+      occurredAt,
+      expectedItemId: state.currentActivity.id,
+      expectedResumeTargetId: state.resumeTarget.id,
       expectedSeq: state.lastSeq,
     });
     this.events = [...this.events, ...planned.events];
@@ -100,23 +162,6 @@ export class RunDriver {
   undo(occurredAt: Date): this {
     const planned = planUndo(this.timetable, this.run, this.events, occurredAt);
     this.events = [...this.events, ...planned.events];
-    this.run = applyRunPatch(this.run, planned.runPatch);
-    return this;
-  }
-
-  correct(transitionId: string, correctedAt: Date, observedAt = correctedAt): this {
-    const target = this.events.find((event) => event.id === transitionId);
-    if (!target) throw new Error('transition does not exist');
-    const planned = planTransitionTimeCorrection(this.timetable, this.run, this.events, {
-      runId: this.run.id,
-      transitionId,
-      expectedOccurredAt: target.occurredAt,
-      correctedAt,
-      observedAt,
-      expectedSeq: this.state.lastSeq,
-    });
-    const replacements = new Map(planned.events.map((event) => [event.id, event]));
-    this.events = this.events.map((event) => replacements.get(event.id) ?? event);
     this.run = applyRunPatch(this.run, planned.runPatch);
     return this;
   }

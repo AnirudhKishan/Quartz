@@ -16,24 +16,30 @@ import { getLocalDate } from '../domain/time';
 import { toSummary } from '../domain/timetable';
 import {
   applyRunPatch,
+  planEndPaused,
+  planPause,
   planReorderRun,
+  planResume,
   planStartNext,
+  planStartUnplanned,
   planTimelineEdit,
   planStartRun,
   planTransition,
-  planTransitionTimeCorrection,
   planUndo,
   type PlannedWrite,
 } from '../domain/transitions';
 import type {
-  CorrectTransitionTimeCommand,
   DayDecision,
   EditTimelineCommand,
+  EndPausedCommand,
+  PauseCommand,
   ReorderRunCommand,
+  ResumeCommand,
   Run,
   RunEvent,
   SkipDayCommand,
   StartNextCommand,
+  StartUnplannedCommand,
   Timetable,
   TimetableRef,
   TimetableSummary,
@@ -41,7 +47,7 @@ import type {
 } from '../domain/types';
 
 export const DB_NAME = 'quartz';
-export const DB_VERSION = 2;
+export const DB_VERSION = 3;
 
 const TIMETABLES = 'timetables';
 const RUNS = 'runs';
@@ -99,12 +105,27 @@ const asDayDecision = (raw: unknown): DayDecision | null => {
 
 const asEvent = (raw: unknown): RunEvent => {
   const record = raw as Record<string, unknown>;
+  const insertedRecord =
+    record.inserted && typeof record.inserted === 'object'
+      ? (record.inserted as Record<string, unknown>)
+      : null;
   return {
     id: String(record.id),
     runId: String(record.runId),
     itemId: String(record.itemId),
     type: record.type as RunEvent['type'],
     occurredAt: new Date(record.occurredAt as string | number | Date),
+    inserted: insertedRecord
+      ? {
+          label: String(insertedRecord.label),
+          origin: insertedRecord.origin === 'pause' ? 'pause' : 'unplanned',
+          resumeTargetId:
+            insertedRecord.resumeTargetId === null ||
+            insertedRecord.resumeTargetId === undefined
+              ? null
+              : String(insertedRecord.resumeTargetId),
+        }
+      : null,
     reversesEventId: (record.reversesEventId ?? null) as string | null,
     transitionId: String(record.transitionId),
     seq: Number(record.seq),
@@ -547,69 +568,33 @@ export class IndexedDbRepository implements TimetableRepository {
     );
   }
 
-  reorderRun(command: ReorderRunCommand): Promise<void> {
+  startUnplanned(command: StartUnplannedCommand): Promise<void> {
     return this.mutateRun(command.runId, (timetable, run, events) =>
-      planReorderRun(timetable, run, events, command),
+      planStartUnplanned(timetable, run, events, command),
     );
   }
 
-  correctTransitionTime(command: CorrectTransitionTimeCommand): Promise<void> {
-    return this.database().then(
-      (db) =>
-        new Promise<void>((resolve, reject) => {
-          const tx = db.transaction([TIMETABLES, RUNS, EVENTS], 'readwrite');
-          let failure: unknown = null;
-          tx.oncomplete = () => (failure ? reject(failure) : resolve());
-          tx.onabort = () => reject(failure ?? storageError(tx.error));
-          tx.onerror = () => reject(failure ?? storageError(tx.error));
+  pause(command: PauseCommand): Promise<void> {
+    return this.mutateRun(command.runId, (timetable, run, events) =>
+      planPause(timetable, run, events, command),
+    );
+  }
 
-          const runStore = tx.objectStore(RUNS);
-          const eventStore = tx.objectStore(EVENTS);
-          const runRequest = runStore.get(command.runId);
-          runRequest.onsuccess = () => {
-            const run = asRun(runRequest.result);
-            if (!run) {
-              failure = new QuartzError('not-found', `Run ${command.runId} does not exist.`);
-              tx.abort();
-              return;
-            }
+  resume(command: ResumeCommand): Promise<void> {
+    return this.mutateRun(command.runId, (timetable, run, events) =>
+      planResume(timetable, run, events, command),
+    );
+  }
 
-            const timetableRequest = tx
-              .objectStore(TIMETABLES)
-              .get([run.timetableId, run.timetableVersion]);
-            timetableRequest.onsuccess = () => {
-              const timetable = timetableRequest.result as Timetable | undefined;
-              if (!timetable) {
-                failure = new QuartzError(
-                  'corrupt-history',
-                  `Run ${run.id} references a timetable that is no longer stored.`,
-                );
-                tx.abort();
-                return;
-              }
+  endPaused(command: EndPausedCommand): Promise<void> {
+    return this.mutateRun(command.runId, (timetable, run, events) =>
+      planEndPaused(timetable, run, events, command),
+    );
+  }
 
-              const eventsRequest = eventStore.index('runId').getAll(run.id);
-              eventsRequest.onsuccess = () => {
-                try {
-                  const events = (eventsRequest.result as unknown[])
-                    .map(asEvent)
-                    .sort((a, b) => a.seq - b.seq);
-                  const planned = planTransitionTimeCorrection(
-                    timetable,
-                    run,
-                    events,
-                    command,
-                  );
-                  for (const event of planned.events) eventStore.put(event);
-                  if (planned.runPatch) runStore.put(applyRunPatch(run, planned.runPatch));
-                } catch (error) {
-                  failure = error;
-                  tx.abort();
-                }
-              };
-            };
-          };
-        }),
+  reorderRun(command: ReorderRunCommand): Promise<void> {
+    return this.mutateRun(command.runId, (timetable, run, events) =>
+      planReorderRun(timetable, run, events, command),
     );
   }
 

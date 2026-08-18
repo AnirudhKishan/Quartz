@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -131,8 +131,8 @@ describe('active run screen', () => {
   it('reorders only the remaining tasks for today', async () => {
     const { repository } = await startDay();
 
-    const breakfastBefore = screen.getByRole('heading', { name: 'Breakfast' }).closest('li')!;
-    await user().click(within(breakfastBefore).getByRole('button', { name: 'Do this next' }));
+    await user().click(screen.getByRole('button', { name: 'Open Breakfast details' }));
+    await user().click(await screen.findByRole('button', { name: 'Do this next' }));
 
     await waitFor(async () =>
       expect((await repository.getActiveRun())?.executionOrder).toEqual([
@@ -162,21 +162,24 @@ describe('active run screen', () => {
     expect(events[2]?.occurredAt.toISOString()).toBe('2026-03-02T01:15:00.000Z');
   });
 
-  it('creates and saves a between-task gap from the timeline editor', async () => {
+  it('creates and saves a between-task gap with in-place keyboard editing', async () => {
     const { clock, repository } = await startDay();
     clock.advanceMinutes(30);
     await user().click(screen.getByRole('button', { name: 'Next' }));
     await screen.findByText('Gym in progress');
     clock.advanceMinutes(10);
 
-    await user().click(screen.getByRole('button', { name: 'Edit timeline' }));
-    expect(screen.getByRole('heading', { name: 'Editing actual timeline' })).toBeVisible();
-    await user().click(screen.getByRole('button', { name: 'Add between tasks' }));
-    await user().click(screen.getByRole('button', { name: 'Save changes' }));
+    const actor = user();
+    const gymCard = screen.getByRole('heading', { name: 'Gym' }).closest('article')!;
+    await actor.dblClick(gymCard);
+    const startEdge = screen.getByRole('button', { name: 'Adjust Gym segment start' });
+    startEdge.focus();
+    await actor.keyboard('{ArrowDown}');
+    await actor.click(screen.getByRole('button', { name: 'Save' }));
 
     await waitFor(() =>
       expect(
-        screen.queryByRole('heading', { name: 'Editing actual timeline' }),
+        screen.queryByRole('button', { name: 'Adjust Gym segment start' }),
       ).not.toBeInTheDocument(),
     );
     const run = await repository.getActiveRun();
@@ -207,11 +210,69 @@ describe('active run screen', () => {
     const { clock } = await startDay();
 
     clock.advanceMinutes(30);
-    await user().click(screen.getByText('More actions'));
-    await user().click(screen.getByRole('button', { name: 'Skip current task' }));
+    await user().click(screen.getByRole('button', { name: 'Open Wake details' }));
+    await user().click(await screen.findByRole('button', { name: 'Skip current task' }));
 
     expect(await screen.findByText('Gym in progress')).toBeInTheDocument();
     expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
+  });
+
+  it('starts a named unplanned task from the current-task details', async () => {
+    const { clock } = await startDay();
+    clock.advanceMinutes(10);
+
+    const actor = user();
+    await actor.click(screen.getByRole('button', { name: 'Open Wake details' }));
+    await actor.click(await screen.findByRole('button', { name: 'Start another task' }));
+    const input = screen.getByLabelText('Task name');
+    expect(input).toHaveValue('Between tasks');
+    await actor.clear(input);
+    await actor.type(input, 'Phone call');
+    await actor.click(screen.getByRole('button', { name: 'Start' }));
+
+    expect(await screen.findByText('Phone call in progress')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Phone call' })).toBeInTheDocument();
+    clock.advanceMinutes(5);
+    await actor.click(screen.getByRole('button', { name: 'Next' }));
+    expect(await screen.findByText('Gym in progress')).toBeInTheDocument();
+  });
+
+  it('pauses, resumes, and restores the paused state with Undo', async () => {
+    const { clock } = await startDay();
+    clock.advanceMinutes(10);
+
+    const actor = user();
+    await actor.click(screen.getByRole('button', { name: 'Open Wake details' }));
+    await actor.click(await screen.findByRole('button', { name: 'Pause' }));
+    expect(await screen.findByRole('button', { name: 'Resume Wake' })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'End Wake' })).toBeVisible();
+
+    clock.advanceMinutes(5);
+    await actor.click(screen.getByRole('button', { name: 'Resume Wake' }));
+    expect(await screen.findByText('Wake in progress')).toBeInTheDocument();
+    await actor.click(screen.getByRole('button', { name: 'Undo' }));
+    expect(await screen.findByRole('button', { name: 'Resume Wake' })).toBeVisible();
+  });
+
+  it('ends a paused task while Between tasks keeps running', async () => {
+    const { clock } = await startDay();
+    clock.advanceMinutes(10);
+
+    const actor = user();
+    await actor.click(screen.getByRole('button', { name: 'Open Wake details' }));
+    await actor.click(await screen.findByRole('button', { name: 'Pause' }));
+    clock.advanceMinutes(5);
+    await actor.click(screen.getByRole('button', { name: 'End Wake' }));
+
+    expect(await screen.findByText('Between tasks in progress')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Next' })).toBeVisible();
+  });
+
+  it('does not expose the retired timeline editor or timestamp dialogs', async () => {
+    await startDay();
+    expect(screen.queryByRole('button', { name: 'Edit timeline' })).not.toBeInTheDocument();
+    expect(screen.queryByText('Edit start')).not.toBeInTheDocument();
+    expect(screen.queryByText('Edit time')).not.toBeInTheDocument();
   });
 
   it('confirms skipping an active day and excludes its retained history', async () => {
@@ -273,34 +334,37 @@ describe('active run screen', () => {
     expect(await screen.findByText('Gym in progress')).toBeInTheDocument();
   });
 
-  it('corrects a recently recorded changeover from the timeline', async () => {
+  it('edits a recently recorded changeover from the task edge', async () => {
     const { clock, repository } = await startDay();
     clock.advanceMinutes(40);
     await user().click(screen.getByRole('button', { name: 'Next' }));
     await screen.findByText('Gym in progress');
 
-    await user().click(screen.getByRole('button', { name: /06:40 Edit time/ }));
-    const input = screen.getByLabelText('Actual changeover time');
-    fireEvent.change(input, { target: { value: '2026-03-02T06:30' } });
-    await user().click(screen.getByRole('button', { name: 'Save correction' }));
+    const actor = user();
+    await actor.dblClick(screen.getByRole('heading', { name: 'Gym' }).closest('article')!);
+    const startEdge = screen.getByRole('button', { name: 'Adjust Gym segment start' });
+    startEdge.focus();
+    await actor.keyboard('{ArrowUp}{ArrowUp}');
+    await actor.click(screen.getByRole('button', { name: 'Save' }));
 
-    expect(await screen.findByRole('button', { name: /06:30 Edit time/ })).toBeInTheDocument();
+    expect(await screen.findByText(/Actual 06:30/)).toBeInTheDocument();
     const run = await repository.getActiveRun();
     const events = await repository.getRunEvents(run!.id);
     expect(events[1]?.occurredAt.toISOString()).toBe('2026-03-02T01:00:00.000Z');
     expect(events[2]?.occurredAt.toISOString()).toBe('2026-03-02T01:00:00.000Z');
   });
 
-  it('corrects the first task start from the timeline', async () => {
+  it('edits the first task start from its top edge', async () => {
     const { repository } = await startDay();
 
-    await user().click(screen.getByRole('button', { name: /06:00 Edit start/ }));
-    fireEvent.change(screen.getByLabelText('Actual day start time'), {
-      target: { value: '2026-03-02T05:50' },
-    });
-    await user().click(screen.getByRole('button', { name: 'Save correction' }));
+    const actor = user();
+    await actor.dblClick(screen.getByRole('heading', { name: 'Wake' }).closest('article')!);
+    const startEdge = screen.getByRole('button', { name: 'Adjust Wake segment start' });
+    startEdge.focus();
+    await actor.keyboard('{ArrowUp}{ArrowUp}');
+    await actor.click(screen.getByRole('button', { name: 'Save' }));
 
-    expect(await screen.findByRole('button', { name: /05:50 Edit start/ })).toBeInTheDocument();
+    expect(await screen.findByText(/Actual 05:50/)).toBeInTheDocument();
     const run = await repository.getActiveRun();
     const events = await repository.getRunEvents(run!.id);
     expect(run?.startedAt.toISOString()).toBe('2026-03-02T00:20:00.000Z');
@@ -352,11 +416,12 @@ describe('reports', () => {
     await user().click(screen.getByRole('link', { name: 'See the report' }));
     await screen.findByRole('heading', { name: /2 Mar 2026/ });
 
-    await user().click(screen.getByRole('button', { name: /08:30 Edit time/ }));
-    fireEvent.change(screen.getByLabelText('Actual changeover time'), {
-      target: { value: '2026-03-02T08:20' },
-    });
-    await user().click(screen.getByRole('button', { name: 'Save correction' }));
+    const actor = user();
+    await actor.dblClick(screen.getByRole('heading', { name: 'Breakfast' }).closest('article')!);
+    const endEdge = screen.getByRole('button', { name: 'Adjust Breakfast segment end' });
+    endEdge.focus();
+    await actor.keyboard('{ArrowUp}{ArrowUp}');
+    await actor.click(screen.getByRole('button', { name: 'Save' }));
 
     expect(await screen.findByText('20m 00s late')).toBeInTheDocument();
   });
@@ -409,7 +474,7 @@ describe('backup', () => {
 
     const backup = JSON.stringify({
       format: 'quartz.backup',
-      version: 1,
+      version: 3,
       exportedAt: '2026-03-02T00:00:00.000Z',
       timetables: [simpleTimetable],
       runs: [],

@@ -14,23 +14,29 @@ import { timetableKey, toSummary } from '../domain/timetable';
 import { getLocalDate } from '../domain/time';
 import {
   applyRunPatch,
+  planEndPaused,
+  planPause,
   planReorderRun,
+  planResume,
   planStartNext,
+  planStartUnplanned,
   planTimelineEdit,
   planStartRun,
   planTransition,
-  planTransitionTimeCorrection,
   planUndo,
 } from '../domain/transitions';
 import type {
-  CorrectTransitionTimeCommand,
   DayDecision,
   EditTimelineCommand,
+  EndPausedCommand,
+  PauseCommand,
   ReorderRunCommand,
+  ResumeCommand,
   Run,
   RunEvent,
   SkipDayCommand,
   StartNextCommand,
+  StartUnplannedCommand,
   Timetable,
   TimetableRef,
   TimetableSummary,
@@ -176,24 +182,47 @@ export class InMemoryRepository implements TimetableRepository {
     this.runs.set(run.id, applyRunPatch(run, planned.runPatch));
   }
 
+  async startUnplanned(command: StartUnplannedCommand): Promise<void> {
+    const run = this.requireRun(command.runId);
+    const timetable = await this.getTimetable(run.timetableId, run.timetableVersion);
+    const events = this.events.get(run.id) ?? [];
+    const planned = planStartUnplanned(timetable, run, events, command);
+    this.events.set(run.id, [...events, ...planned.events]);
+    this.runs.set(run.id, applyRunPatch(run, planned.runPatch));
+  }
+
+  async pause(command: PauseCommand): Promise<void> {
+    const run = this.requireRun(command.runId);
+    const timetable = await this.getTimetable(run.timetableId, run.timetableVersion);
+    const events = this.events.get(run.id) ?? [];
+    const planned = planPause(timetable, run, events, command);
+    this.events.set(run.id, [...events, ...planned.events]);
+    this.runs.set(run.id, applyRunPatch(run, planned.runPatch));
+  }
+
+  async resume(command: ResumeCommand): Promise<void> {
+    const run = this.requireRun(command.runId);
+    const timetable = await this.getTimetable(run.timetableId, run.timetableVersion);
+    const events = this.events.get(run.id) ?? [];
+    const planned = planResume(timetable, run, events, command);
+    this.events.set(run.id, [...events, ...planned.events]);
+    this.runs.set(run.id, applyRunPatch(run, planned.runPatch));
+  }
+
+  async endPaused(command: EndPausedCommand): Promise<void> {
+    const run = this.requireRun(command.runId);
+    const timetable = await this.getTimetable(run.timetableId, run.timetableVersion);
+    const events = this.events.get(run.id) ?? [];
+    const planned = planEndPaused(timetable, run, events, command);
+    this.events.set(run.id, [...events, ...planned.events]);
+    this.runs.set(run.id, applyRunPatch(run, planned.runPatch));
+  }
+
   async reorderRun(command: ReorderRunCommand): Promise<void> {
     const run = this.requireRun(command.runId);
     const timetable = await this.getTimetable(run.timetableId, run.timetableVersion);
     const events = this.events.get(run.id) ?? [];
     const planned = planReorderRun(timetable, run, events, command);
-    this.runs.set(run.id, applyRunPatch(run, planned.runPatch));
-  }
-
-  async correctTransitionTime(command: CorrectTransitionTimeCommand): Promise<void> {
-    const run = this.requireRun(command.runId);
-    const timetable = await this.getTimetable(run.timetableId, run.timetableVersion);
-    const events = this.events.get(run.id) ?? [];
-    const planned = planTransitionTimeCorrection(timetable, run, events, command);
-    const replacements = new Map(planned.events.map((event) => [event.id, event]));
-    this.events.set(
-      run.id,
-      events.map((event) => replacements.get(event.id) ?? event),
-    );
     this.runs.set(run.id, applyRunPatch(run, planned.runPatch));
   }
 

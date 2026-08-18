@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { BackupService } from '../application/backupService';
 import { InMemoryRepository } from '../infrastructure/memoryRepository';
 import { sequentialIdGenerator } from './clock';
+import { reconstructRunState } from './runState';
 import { simpleTimetable } from '../test/fixtures';
 import { RunDriver } from '../test/runDriver';
 import { createBackupDocument, parseBackupDocument } from './backup';
@@ -54,13 +55,10 @@ describe('parseBackupDocument', () => {
     );
   });
 
-  it('restores version 1 runs in original timetable order', () => {
-    const document = validDocument();
-    const runs = (document.runs as Record<string, unknown>[]).map(
-      ({ executionOrder: _executionOrder, ...run }) => run,
+  it('rejects legacy backups instead of migrating old histories', () => {
+    expect(() => parseBackupDocument({ ...validDocument(), version: 2 })).toThrow(
+      /Unsupported backup version 2/,
     );
-    const parsed = parseBackupDocument({ ...document, version: 1, runs });
-    expect(parsed.runs[0]?.executionOrder).toBeNull();
   });
 
   it('rejects a run whose timetable version is missing', () => {
@@ -106,6 +104,28 @@ describe('parseBackupDocument', () => {
       parseBackupDocument({ ...document, runs: [{ ...runs[0], startedAt: 'not-a-date' }] }),
     ).toThrow(/not valid/);
   });
+
+  it('round-trips inserted occurrences and repeated planned segments', () => {
+    const driver = new RunDriver(simpleTimetable, START)
+      .pause(new Date('2026-03-02T00:10:00.000Z'))
+      .resume(new Date('2026-03-02T00:15:00.000Z'));
+    const document = createBackupDocument(
+      { timetables: [simpleTimetable], runs: [driver.run], events: driver.events },
+      new Date('2026-03-02T00:20:00.000Z'),
+    );
+    const parsed = parseBackupDocument(document);
+    const state = reconstructRunState(
+      parsed.timetables[0]!,
+      parsed.runs[0]!,
+      parsed.events,
+    );
+
+    expect(state.currentActivity?.id).toBe('wake');
+    expect(state.segments.filter((segment) => segment.occurrenceId === 'wake')).toHaveLength(2);
+    expect(
+      state.occurrences.find((occurrence) => occurrence.insertedOrigin === 'pause')?.label,
+    ).toBe('Between tasks');
+  });
 });
 
 describe('BackupService', () => {
@@ -130,7 +150,7 @@ describe('BackupService', () => {
     const service = new BackupService(repository);
 
     expect(() => service.preview('{ not json')).toThrow(/not valid JSON/);
-    expect(() => service.preview('{"format":"quartz.backup","version":1}')).toThrow(
+    expect(() => service.preview('{"format":"quartz.backup","version":3}')).toThrow(
       /must contain timetables/,
     );
 
@@ -142,6 +162,6 @@ describe('BackupService', () => {
     const { repository } = await populatedRepository();
     const service = new BackupService(repository, { now: () => new Date('2026-03-02T04:05:06Z') });
 
-    expect(service.suggestedFileName()).toBe('quartz-backup-v2-2026-03-02T04-05-06.json');
+    expect(service.suggestedFileName()).toBe('quartz-backup-v3-2026-03-02T04-05-06.json');
   });
 });

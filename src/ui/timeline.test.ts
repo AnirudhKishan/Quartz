@@ -3,10 +3,9 @@ import { describe, expect, it } from 'vitest';
 import { computePlannedSchedule } from '../domain/analysis';
 import { overnightTimetable, simpleTimetable } from '../test/fixtures';
 import {
-  fromLocalDateTimeValue,
   instantFraction,
+  moveTimelineBoundary,
   timelineSectionHeight,
-  toLocalDateTimeValue,
 } from './timeline';
 
 describe('timeline geometry', () => {
@@ -32,14 +31,77 @@ describe('timeline geometry', () => {
   });
 });
 
-describe('timetable-local correction input', () => {
-  it('round-trips a local date and time through the timetable timezone', () => {
-    const instant = new Date('2026-03-02T03:12:00.000Z');
-    const value = toLocalDateTimeValue(instant, 'Asia/Kolkata');
+describe('smart boundary movement', () => {
+  const minute = 60_000;
+  const segments = [
+    {
+      startEventId: 'a-start',
+      endEventId: 'a-end',
+      start: 0,
+      end: 30 * minute,
+    },
+    {
+      startEventId: 'b-start',
+      endEventId: 'b-end',
+      start: 40 * minute,
+      end: 60 * minute,
+    },
+  ];
 
-    expect(value).toBe('2026-03-02T08:42');
-    expect(fromLocalDateTimeValue(value, 'Asia/Kolkata')?.toISOString()).toBe(
-      instant.toISOString(),
+  it('prefers an exact neighboring edge over the five-minute grid', () => {
+    const moved = moveTimelineBoundary(segments, 1, 'start', 31 * minute, 0, 90 * minute);
+    expect(moved.magnetic).toBe(true);
+    expect(moved.updates.get('b-start')).toBe(30 * minute);
+    expect(moved.updates.has('a-end')).toBe(false);
+  });
+
+  it('creates a gap while moving away from a neighbor', () => {
+    const moved = moveTimelineBoundary(segments, 0, 'end', 35 * minute, 0, 90 * minute);
+    expect(moved.magnetic).toBe(false);
+    expect(moved.updates.get('a-end')).toBe(35 * minute);
+    expect(moved.updates.has('b-start')).toBe(false);
+  });
+
+  it('carries only the immediate neighbor when crossing it', () => {
+    const topCross = moveTimelineBoundary(segments, 1, 'start', 20 * minute, 0, 90 * minute);
+    expect(topCross.updates.get('a-end')).toBe(20 * minute);
+    expect(topCross.updates.get('b-start')).toBe(20 * minute);
+
+    const bottomCross = moveTimelineBoundary(segments, 0, 'end', 45 * minute, 0, 90 * minute);
+    expect(bottomCross.updates.get('a-end')).toBe(45 * minute);
+    expect(bottomCross.updates.get('b-start')).toBe(45 * minute);
+  });
+
+  it('does not cross immutable history between editable edges', () => {
+    const segment = [
+      {
+        startEventId: 'start',
+        endEventId: 'end',
+        start: 10 * minute,
+        end: 30 * minute,
+      },
+    ];
+
+    const movedStart = moveTimelineBoundary(
+      segment,
+      0,
+      'start',
+      20 * minute,
+      0,
+      90 * minute,
+      { maximum: 15 * minute },
     );
+    expect(movedStart.updates.get('start')).toBe(15 * minute);
+
+    const movedEnd = moveTimelineBoundary(
+      segment,
+      0,
+      'end',
+      10 * minute,
+      0,
+      90 * minute,
+      { minimum: 15 * minute },
+    );
+    expect(movedEnd.updates.get('end')).toBe(15 * minute);
   });
 });

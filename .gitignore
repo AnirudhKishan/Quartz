@@ -7,3 +7,5 @@ dev-dist
 coverage
 .vite
 tsconfig.tsbuildinfo
+playwright-report
+test-results

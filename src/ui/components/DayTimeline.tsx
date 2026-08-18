@@ -1,140 +1,624 @@
-import { Fragment, useLayoutEffect, useMemo, useRef } from 'react';
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 
 import { buildRunReport } from '../../domain/analysis';
-import type { RunEvent, RunState } from '../../domain/types';
+import { zonedLocalTimeToUtc } from '../../domain/time';
+import type {
+  ActivitySegment,
+  RunState,
+  TimelineEventReplacement,
+  TrackedOccurrence,
+} from '../../domain/types';
 import {
   deviationTone,
   formatDeviation,
   formatStopwatch,
   formatTimeInZone,
 } from '../format';
-import { instantFraction, timelineSectionHeight } from '../timeline';
+import {
+  moveTimelineBoundary,
+  timelineSectionHeight,
+  type TimelineDraftSegment,
+} from '../timeline';
 
 export interface DayTimelineProps {
   readonly state: RunState;
   readonly now: Date;
   readonly elapsedMs?: number;
-  readonly onEditTransition?: (transition: RunEvent) => void;
-  readonly onReorder?: (itemId: string) => void;
+  readonly selectedActivityId?: string | null;
+  readonly onSelectActivity?: (
+    activityId: string,
+    anchorTop: number,
+    trigger: HTMLElement,
+  ) => void;
+  readonly onSaveTimeline?: (
+    replacements: readonly TimelineEventReplacement[],
+  ) => Promise<boolean>;
+  readonly onEditingChange?: (editing: boolean) => void;
+  readonly busy?: boolean;
   readonly autoFocusCurrent?: boolean;
+  readonly constrainHeight?: boolean;
 }
 
-type ItemState = 'completed' | 'current' | 'upcoming' | 'skipped';
+interface BoundaryHandleProps {
+  readonly edge: 'start' | 'end';
+  readonly value: number;
+  readonly label: string;
+  readonly magnetic: boolean;
+  readonly onMove: (rawValue: number) => void;
+}
+
+const BoundaryHandle = ({
+  edge,
+  value,
+  label,
+  magnetic,
+  onMove,
+}: BoundaryHandleProps) => {
+  const drag = useRef<{ pointerId: number; y: number; value: number } | null>(null);
+  return (
+    <button
+      type="button"
+      className={`timeline-edge timeline-edge--${edge}${magnetic ? ' timeline-edge--magnetic' : ''}`}
+      aria-label={label}
+      aria-valuetext={new Date(value).toISOString()}
+      onPointerDown={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        event.currentTarget.setPointerCapture(event.pointerId);
+        drag.current = { pointerId: event.pointerId, y: event.clientY, value };
+      }}
+      onPointerMove={(event) => {
+        const active = drag.current;
+        if (!active || active.pointerId !== event.pointerId) return;
+        if (event.clientY < 80) window.scrollBy(0, -12);
+        if (event.clientY > window.innerHeight - 80) window.scrollBy(0, 12);
+        onMove(active.value + (event.clientY - active.y) * 60_000);
+      }}
+      onPointerUp={(event) => {
+        if (drag.current?.pointerId === event.pointerId) drag.current = null;
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }}
+      onPointerCancel={() => {
+        drag.current = null;
+      }}
+      onKeyDown={(event) => {
+        if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
+        event.preventDefault();
+        onMove(value + (event.key === 'ArrowUp' ? -1 : 1) * 5 * 60_000);
+      }}
+    >
+      <span aria-hidden="true" />
+    </button>
+  );
+};
+
+const occurrenceFor = (state: RunState, id: string): TrackedOccurrence => {
+  const occurrence = state.occurrences.find((candidate) => candidate.id === id);
+  if (!occurrence) throw new Error(`Missing occurrence ${id}`);
+  return occurrence;
+};
 
 export const DayTimeline = ({
   state,
   now,
   elapsedMs = 0,
-  onEditTransition,
-  onReorder,
+  selectedActivityId = null,
+  onSelectActivity,
+  onSaveTimeline,
+  onEditingChange,
+  busy = false,
   autoFocusCurrent = false,
+  constrainHeight = true,
 }: DayTimelineProps) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const currentRef = useRef<HTMLLIElement>(null);
-  const markerRef = useRef<HTMLDivElement>(null);
+  const cardRefs = useRef(new Map<string, HTMLElement>());
+  const longPress = useRef<{
+    timer: number;
+    x: number;
+    y: number;
+    segmentId: string;
+    target: HTMLElement;
+  } | null>(null);
+  const selectionTimer = useRef<number | null>(null);
+  const suppressClick = useRef(false);
+  const [editingSegmentId, setEditingSegmentId] = useState<string | null>(null);
+  const [draft, setDraft] = useState<Map<string, number>>(() => new Map());
+  const [activeEdge, setActiveEdge] = useState<string | null>(null);
+  const [magneticEdge, setMagneticEdge] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const report = useMemo(
     () => buildRunReport(state.timetable, state.run, state.events),
     [state],
   );
-  const terminals = useMemo(
-    () =>
-      new Map(
-        state.effectiveEvents
-          .filter((event) => event.type === 'completed' || event.type === 'skipped')
-          .map((event) => [event.itemId, event]),
-      ),
+  const eventById = useMemo(
+    () => new Map(state.effectiveEvents.map((event) => [event.id, event])),
     [state.effectiveEvents],
   );
-  const initialStart = state.effectiveEvents.find(
-    (event) => event.seq === 1 && event.type === 'started',
+  const originalTimes = useMemo(() => {
+    const values = new Map<string, number>();
+    state.segments.forEach((segment) => {
+      values.set(segment.startEventId, segment.startedAt.getTime());
+      if (segment.endEventId && segment.endedAt) {
+        values.set(segment.endEventId, segment.endedAt.getTime());
+      }
+    });
+    return values;
+  }, [state.segments]);
+  const lockedEventTimes = useMemo(
+    () =>
+      state.effectiveEvents
+        .filter((event) => !originalTimes.has(event.id))
+        .map((event) => event.occurredAt.getTime()),
+    [originalTimes, state.effectiveEvents],
   );
-  const gaps = useMemo(
-    () => new Map(report.betweenTasks.map((gap) => [gap.afterItemId, gap])),
-    [report.betweenTasks],
+  const valueFor = useCallback(
+    (eventId: string, fallback: Date): number =>
+      draft.get(eventId) ?? originalTimes.get(eventId) ?? fallback.getTime(),
+    [draft, originalTimes],
   );
-  const plannedMarkerIndex = report.observations.findIndex((observation, index) => {
-    const value = now.getTime();
-    const isLast = index === report.observations.length - 1;
-    return (
-      value >= observation.plannedStartUtc.getTime() &&
-      (value < observation.plannedEndUtc.getTime() ||
-        (isLast && value <= observation.plannedEndUtc.getTime()))
-    );
-  });
-  const markerIndex = report.reordered && state.phase === 'running'
-    ? state.currentIndex ?? -1
-    : plannedMarkerIndex;
+  const draftSegments = useMemo<TimelineDraftSegment[]>(
+    () =>
+      state.segments.map((segment) => ({
+        startEventId: segment.startEventId,
+        endEventId: segment.endEventId,
+        start: valueFor(segment.startEventId, segment.startedAt),
+        end:
+          segment.endEventId && segment.endedAt
+            ? valueFor(segment.endEventId, segment.endedAt)
+            : null,
+      })),
+    [state.segments, valueFor],
+  );
+  const dayMinimum = zonedLocalTimeToUtc(
+    state.run.localDate,
+    0,
+    state.timetable.timezone,
+  ).getTime();
+
+  const beginEdit = useCallback(
+    (segmentId: string, target: HTMLElement) => {
+      if (!onSaveTimeline) return;
+      cardRefs.current.set(segmentId, target);
+      setDraft(new Map(originalTimes));
+      setEditingSegmentId(segmentId);
+      setSaveError(null);
+      onEditingChange?.(true);
+    },
+    [onSaveTimeline, onEditingChange, originalTimes],
+  );
+
+  const cancelEdit = useCallback(() => {
+    const segmentId = editingSegmentId;
+    setEditingSegmentId(null);
+    setDraft(new Map());
+    setActiveEdge(null);
+    setMagneticEdge(null);
+    setSaveError(null);
+    onEditingChange?.(false);
+    if (segmentId) {
+      window.setTimeout(() => cardRefs.current.get(segmentId)?.focus(), 0);
+    }
+  }, [editingSegmentId, onEditingChange]);
+
+  useEffect(() => {
+    if (!editingSegmentId) return undefined;
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') cancelEdit();
+    };
+    window.addEventListener('keydown', escape);
+    return () => window.removeEventListener('keydown', escape);
+  }, [cancelEdit, editingSegmentId]);
+
+  useEffect(
+    () => () => {
+      if (longPress.current) window.clearTimeout(longPress.current.timer);
+      if (selectionTimer.current) window.clearTimeout(selectionTimer.current);
+    },
+    [],
+  );
 
   useLayoutEffect(() => {
-    if (!autoFocusCurrent || !currentRef.current) return;
-    const container = containerRef.current;
-    const current = currentRef.current;
-    const marker = markerRef.current;
-    if (!container || typeof container.scrollTo !== 'function') {
-      current.scrollIntoView?.({ block: 'center' });
-      return;
-    }
+    if (!autoFocusCurrent || !currentRef.current || editingSegmentId) return;
+    currentRef.current.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
+  }, [autoFocusCurrent, editingSegmentId, state.currentActivity?.id]);
 
-    const currentTop = current.offsetTop;
-    const currentBottom = currentTop + current.offsetHeight;
-    const markerTop = marker
-      ? (marker.parentElement?.offsetTop ?? 0) + marker.offsetTop
-      : currentTop;
-    const focusTop = Math.min(currentTop, markerTop);
-    const focusBottom = Math.max(currentBottom, markerTop);
-    if (focusBottom - focusTop > container.clientHeight) {
-      current.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
-      return;
-    }
-    container.scrollTo({
-      top: Math.max(0, (focusTop + focusBottom - container.clientHeight) / 2),
-      behavior: 'smooth',
+  const select = (activityId: string, target: HTMLElement) => {
+    onSelectActivity?.(activityId, target.getBoundingClientRect().top, target);
+  };
+
+  const moveBoundary = (segmentIndex: number, edge: 'start' | 'end', rawValue: number) => {
+    const segment = state.segments[segmentIndex];
+    if (!segment) return;
+    const key = `${segment.id}:${edge}`;
+    const originalBoundary =
+      edge === 'start' ? segment.startedAt.getTime() : segment.endedAt?.getTime();
+    const lockedBefore =
+      originalBoundary === undefined
+        ? undefined
+        : lockedEventTimes
+            .filter((value) => value <= originalBoundary)
+            .reduce<number | undefined>(
+              (closest, value) => (closest === undefined || value > closest ? value : closest),
+              undefined,
+            );
+    const lockedAfter =
+      originalBoundary === undefined
+        ? undefined
+        : lockedEventTimes
+            .filter((value) => value >= originalBoundary)
+            .reduce<number | undefined>(
+              (closest, value) => (closest === undefined || value < closest ? value : closest),
+              undefined,
+            );
+    const result = moveTimelineBoundary(
+      draftSegments,
+      segmentIndex,
+      edge,
+      rawValue,
+      dayMinimum,
+      now.getTime(),
+      { minimum: lockedBefore, maximum: lockedAfter },
+    );
+    setDraft((current) => {
+      const next = new Map(current);
+      result.updates.forEach((value, eventId) => next.set(eventId, value));
+      return next;
     });
-  }, [autoFocusCurrent, state.currentIndex]);
+    setActiveEdge(key);
+    setMagneticEdge(result.magnetic ? key : null);
+  };
+
+  const changedEvents = [...originalTimes.entries()].flatMap(([eventId, original]) => {
+    const value = draft.get(eventId) ?? original;
+    const event = eventById.get(eventId);
+    return value !== original && event
+      ? [
+          {
+            eventId,
+            expectedOccurredAt: event.occurredAt,
+            occurredAt: new Date(value),
+          },
+        ]
+      : [];
+  });
+
+  const renderCard = (
+    segment: ActivitySegment,
+    segmentIndex: number,
+    occurrence: TrackedOccurrence,
+  ) => {
+    const plan = report.observations.find(
+      (observation) => observation.item.id === occurrence.plannedItemId,
+    );
+    const occurrenceSegments = state.segments.filter(
+      (candidate) => candidate.occurrenceId === occurrence.id,
+    );
+    const occurrenceSegmentIndex =
+      occurrenceSegments.findIndex((candidate) => candidate.id === segment.id) + 1;
+    const current = segment.endEventId === null && state.currentActivity?.id === occurrence.id;
+    const paused =
+      segment.endType === 'paused' &&
+      state.resumeTarget?.id === occurrence.id &&
+      segment.id === occurrenceSegments[occurrenceSegments.length - 1]?.id;
+    const itemState = segment.endType === 'skipped'
+      ? 'skipped'
+      : current
+        ? 'current'
+        : paused
+          ? 'paused'
+          : occurrence.kind === 'inserted'
+            ? 'unplanned'
+            : 'completed';
+    const draftSegment = draftSegments[segmentIndex]!;
+    const previous = draftSegments[segmentIndex - 1];
+    const next = draftSegments[segmentIndex + 1];
+    const showTopBoundary =
+      editingSegmentId !== null && (!previous || previous.end !== draftSegment.start);
+    const showSharedTop =
+      editingSegmentId !== null && previous?.end === draftSegment.start;
+    const showBottomBoundary =
+      editingSegmentId !== null &&
+      draftSegment.end !== null &&
+      (!next || next.start !== draftSegment.end);
+    const previousSegment = state.segments[segmentIndex - 1];
+    const topBoundaryActive =
+      activeEdge === `${segment.id}:start` ||
+      (showSharedTop &&
+        previousSegment !== undefined &&
+        activeEdge === `${previousSegment.id}:end`);
+    const bottomBoundaryActive = activeEdge === `${segment.id}:end`;
+    const isEditing = editingSegmentId === segment.id;
+    const duration =
+      draftSegment.end === null
+        ? Math.max(0, now.getTime() - draftSegment.start)
+        : Math.max(0, draftSegment.end - draftSegment.start);
+    const sectionHeight = timelineSectionHeight(
+      plan ? plan.plannedDurationMs / Math.max(1, occurrenceSegments.length) : 15 * 60_000,
+    );
+
+    return (
+      <li
+        className={`timeline-item timeline-item--${itemState}${selectedActivityId === occurrence.id ? ' timeline-item--selected' : ''}${isEditing ? ' timeline-item--editing' : ''}`}
+        ref={current ? currentRef : undefined}
+        style={{ minHeight: `${sectionHeight}px` }}
+        key={segment.id}
+      >
+        {(showTopBoundary || showSharedTop) && (
+          <div
+            className={`timeline-boundary timeline-boundary--top${topBoundaryActive ? ' timeline-boundary--active' : ''}`}
+          >
+            <time>{formatTimeInZone(new Date(draftSegment.start), state.timetable.timezone)}</time>
+          </div>
+        )}
+        <span className="timeline-item__rail" aria-hidden="true">
+          <span className="timeline-item__node" />
+        </span>
+        <article
+          className="timeline-item__card"
+          tabIndex={0}
+          aria-describedby={`timeline-help-${segment.id}`}
+          ref={(node) => {
+            if (node) cardRefs.current.set(segment.id, node);
+            else cardRefs.current.delete(segment.id);
+          }}
+          onClick={(event) => {
+            if (editingSegmentId || suppressClick.current) {
+              suppressClick.current = false;
+              return;
+            }
+            if (selectionTimer.current) window.clearTimeout(selectionTimer.current);
+            const target = event.currentTarget;
+            selectionTimer.current = window.setTimeout(
+              () => select(occurrence.id, target),
+              220,
+            );
+          }}
+          onDoubleClick={(event) => {
+            if (selectionTimer.current) window.clearTimeout(selectionTimer.current);
+            event.preventDefault();
+            beginEdit(segment.id, event.currentTarget);
+          }}
+          onKeyDown={(event) => {
+            if (event.target !== event.currentTarget) return;
+            if (event.key !== 'Enter' && event.key !== ' ') return;
+            event.preventDefault();
+            beginEdit(segment.id, event.currentTarget);
+          }}
+          onPointerDown={(event) => {
+            if (editingSegmentId || event.pointerType === 'mouse') return;
+            const target = event.currentTarget;
+            longPress.current = {
+              timer: window.setTimeout(() => {
+                suppressClick.current = true;
+                navigator.vibrate?.(12);
+                beginEdit(segment.id, target);
+                longPress.current = null;
+              }, 500),
+              x: event.clientX,
+              y: event.clientY,
+              segmentId: segment.id,
+              target,
+            };
+          }}
+          onPointerMove={(event) => {
+            const press = longPress.current;
+            if (
+              press &&
+              (Math.abs(event.clientX - press.x) > 8 || Math.abs(event.clientY - press.y) > 8)
+            ) {
+              window.clearTimeout(press.timer);
+              longPress.current = null;
+            }
+          }}
+          onPointerUp={() => {
+            if (!longPress.current) return;
+            window.clearTimeout(longPress.current.timer);
+            longPress.current = null;
+          }}
+          onPointerCancel={() => {
+            if (!longPress.current) return;
+            window.clearTimeout(longPress.current.timer);
+            longPress.current = null;
+          }}
+        >
+          <span id={`timeline-help-${segment.id}`} className="sr-only">
+            Press Enter or Space to edit recorded boundaries. Use the details button for task
+            actions.
+          </span>
+          {isEditing && (
+            <BoundaryHandle
+              edge="start"
+              value={draftSegment.start}
+              label={`Adjust ${occurrence.label} segment start`}
+              magnetic={magneticEdge === `${segment.id}:start`}
+              onMove={(value) => moveBoundary(segmentIndex, 'start', value)}
+            />
+          )}
+          <div className="timeline-item__heading">
+            <h2>{occurrence.label}</h2>
+            <div className="timeline-item__heading-actions">
+              <span className="timeline-item__state">{itemState}</span>
+              {!editingSegmentId && onSelectActivity && (
+                <button
+                  type="button"
+                  className="timeline-item__details"
+                  aria-label={`Open ${occurrence.label} details`}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    select(occurrence.id, event.currentTarget.closest('article')!);
+                  }}
+                >
+                  ›
+                </button>
+              )}
+            </div>
+          </div>
+          {plan && (
+            <p className="timeline-item__planned">
+              Planned {plan.item.plannedStart}–{plan.item.plannedEnd}
+            </p>
+          )}
+          {occurrence.kind === 'inserted' && (
+            <p className="timeline-item__planned">Unplanned activity</p>
+          )}
+          {occurrenceSegments.length > 1 && (
+            <p className="timeline-item__segment-count">
+              Segment {occurrenceSegmentIndex} of {occurrenceSegments.length}
+            </p>
+          )}
+          {!editingSegmentId && (
+            <p className="timeline-item__actual">
+              Actual {formatTimeInZone(segment.startedAt, state.timetable.timezone)}
+              {segment.endedAt
+                ? `–${formatTimeInZone(segment.endedAt, state.timetable.timezone)}`
+                : ''}
+              {segment.endedAt ? ` · ${formatStopwatch(duration)}` : ''}
+              {plan &&
+                occurrenceSegmentIndex === 1 &&
+                plan.startDeviationMs !== null && (
+                  <>
+                    {' · '}
+                    <span className={`tone--${deviationTone(plan.startDeviationMs)}`}>
+                      {formatDeviation(plan.startDeviationMs)}
+                    </span>
+                  </>
+                )}
+            </p>
+          )}
+          {plan &&
+            occurrenceSegmentIndex === occurrenceSegments.length &&
+            plan.durationDeviationMs !== null &&
+            !editingSegmentId && (
+              <p
+                className={`timeline-item__actual tone--${deviationTone(plan.durationDeviationMs)}`}
+              >
+                  Duration {formatDeviation(plan.durationDeviationMs, 'longer')}
+                  {plan.segmentCount > 1 ? ` · ${plan.segmentCount} segments` : ''}
+              </p>
+            )}
+          {current && !editingSegmentId && (
+            <p className="timeline-item__elapsed" aria-label="Time in this step">
+              {formatStopwatch(elapsedMs)}
+            </p>
+          )}
+          {isEditing && (
+            <p className="timeline-item__elapsed">{formatStopwatch(duration)}</p>
+          )}
+          {isEditing && segment.endEventId && draftSegment.end !== null && (
+            <BoundaryHandle
+              edge="end"
+              value={draftSegment.end}
+              label={`Adjust ${occurrence.label} segment end`}
+              magnetic={magneticEdge === `${segment.id}:end`}
+              onMove={(value) => moveBoundary(segmentIndex, 'end', value)}
+            />
+          )}
+        </article>
+        {current && !editingSegmentId && (
+          <div
+            className="timeline-now"
+            style={{
+              top: `${Math.min(
+                sectionHeight - 2,
+                Math.max(2, (elapsedMs / Math.max(plan?.plannedDurationMs ?? elapsedMs, 1)) * sectionHeight),
+              )}px`,
+            }}
+          >
+            <time>{formatTimeInZone(now, state.timetable.timezone)}</time>
+          </div>
+        )}
+        {showBottomBoundary && draftSegment.end !== null && (
+          <div
+            className={`timeline-boundary timeline-boundary--bottom${bottomBoundaryActive ? ' timeline-boundary--active' : ''}`}
+          >
+            <time>{formatTimeInZone(new Date(draftSegment.end), state.timetable.timezone)}</time>
+          </div>
+        )}
+      </li>
+    );
+  };
+
+  const upcoming = report.observations.filter(
+    (observation) =>
+      observation.segments.length === 0 &&
+      !state.skippedOccurrenceIds.includes(observation.item.id),
+  );
 
   return (
-    <div className="day-timeline" ref={containerRef} aria-label="Timetable day">
-      <ol className="day-timeline__list">
-        {report.observations.map((observation, index) => {
-          const terminal = terminals.get(observation.item.id) ?? null;
-          const itemState: ItemState = observation.skipped
-            ? 'skipped'
-            : state.status === 'active' && state.currentIndex === index
-              ? 'current'
-              : terminal
-                ? 'completed'
-                : 'upcoming';
-          const nowFraction =
-            markerIndex !== index
-              ? null
-              : report.reordered && state.currentItemStartedAt
-                ? Math.min(
-                    1,
-                    Math.max(
-                      0,
-                      (now.getTime() - state.currentItemStartedAt.getTime()) /
-                        observation.plannedDurationMs,
-                    ),
-                  )
-                : instantFraction(observation, now);
-          const isCurrentMarker = nowFraction !== null;
-          const sectionHeight = timelineSectionHeight(observation.plannedDurationMs);
-
-          const gap = gaps.get(observation.item.id);
-          return (
-            <Fragment key={observation.item.id}>
+    <>
+      <div
+        className={`day-timeline${constrainHeight ? '' : ' day-timeline--unconstrained'}${editingSegmentId ? ' day-timeline--editing' : ''}`}
+        ref={containerRef}
+        aria-label="Timetable day"
+      >
+        <ol className="day-timeline__list">
+          {state.segments.map((segment, index) => {
+            const occurrence = occurrenceFor(state, segment.occurrenceId);
+            const draftSegment = draftSegments[index]!;
+            const next = draftSegments[index + 1];
+            const gap =
+              draftSegment.end !== null && next && next.start > draftSegment.end
+                ? { start: draftSegment.end, end: next.start }
+                : null;
+            return (
+              <Fragment key={segment.id}>
+                {renderCard(segment, index, occurrence)}
+                {gap && (
+                  <li className="timeline-gap">
+                    <span>Between tasks</span>
+                    <strong>{formatStopwatch(gap.end - gap.start)}</strong>
+                    {!editingSegmentId && (
+                      <time>
+                        {formatTimeInZone(new Date(gap.start), state.timetable.timezone)}–
+                        {formatTimeInZone(new Date(gap.end), state.timetable.timezone)}
+                      </time>
+                    )}
+                  </li>
+                )}
+              </Fragment>
+            );
+          })}
+          {upcoming.map((observation) => (
             <li
-              className={`timeline-item timeline-item--${itemState}`}
-              ref={itemState === 'current' ? currentRef : undefined}
-              style={{ minHeight: `${sectionHeight}px` }}
+              className={`timeline-item timeline-item--upcoming${selectedActivityId === observation.item.id ? ' timeline-item--selected' : ''}`}
+              key={`upcoming-${observation.item.id}`}
+              style={{ minHeight: `${timelineSectionHeight(observation.plannedDurationMs)}px` }}
             >
               <span className="timeline-item__rail" aria-hidden="true">
                 <span className="timeline-item__node" />
               </span>
-              <article className="timeline-item__card">
+              <article
+                className="timeline-item__card"
+                tabIndex={0}
+                onClick={(event) => select(observation.item.id, event.currentTarget)}
+              >
                 <div className="timeline-item__heading">
                   <h2>{observation.item.label}</h2>
-                  <span className="timeline-item__state">{itemState}</span>
+                  <div className="timeline-item__heading-actions">
+                    <span className="timeline-item__state">upcoming</span>
+                    {onSelectActivity && (
+                      <button
+                        type="button"
+                        className="timeline-item__details"
+                        aria-label={`Open ${observation.item.label} details`}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          select(observation.item.id, event.currentTarget.closest('article')!);
+                        }}
+                      >
+                        ›
+                      </button>
+                    )}
+                  </div>
                 </div>
                 <p className="timeline-item__planned">
                   Planned {observation.item.plannedStart}–{observation.item.plannedEnd}
@@ -142,91 +626,38 @@ export const DayTimeline = ({
                 {observation.reordered && (
                   <p className="timeline-item__reordered">Order changed for today</p>
                 )}
-                {index === 0 && initialStart && onEditTransition && (
-                  <button
-                    type="button"
-                    className="timeline-item__boundary"
-                    onClick={() => onEditTransition(initialStart)}
-                  >
-                    {formatTimeInZone(initialStart.occurredAt, state.timetable.timezone)}
-                    <span>Edit start</span>
-                  </button>
-                )}
-                {observation.actualStart && !observation.skipped && (
-                  <>
-                    <p className="timeline-item__actual">
-                      Actual {formatTimeInZone(observation.actualStart, state.timetable.timezone)}
-                      {observation.actualEnd
-                        ? `–${formatTimeInZone(observation.actualEnd, state.timetable.timezone)}`
-                        : ''}
-                      {' · '}
-                      <span className={`tone--${deviationTone(observation.startDeviationMs)}`}>
-                        {formatDeviation(observation.startDeviationMs)}
-                      </span>
-                    </p>
-                    {observation.durationDeviationMs !== null && (
-                      <p className={`timeline-item__actual tone--${deviationTone(observation.durationDeviationMs)}`}>
-                        Duration {formatDeviation(observation.durationDeviationMs, 'longer')}
-                      </p>
-                    )}
-                  </>
-                )}
-                {itemState === 'current' && (
-                  <p className="timeline-item__elapsed" aria-label="Time in this step">
-                    {formatStopwatch(elapsedMs)}
-                  </p>
-                )}
-                {observation.skipped && terminal && (
-                  <p className="timeline-item__actual">
-                    Skipped at {formatTimeInZone(terminal.occurredAt, state.timetable.timezone)}
-                  </p>
-                )}
-                {terminal && onEditTransition && (
-                  <button
-                    type="button"
-                    className="timeline-item__boundary"
-                    onClick={() => onEditTransition(terminal)}
-                  >
-                    {formatTimeInZone(terminal.occurredAt, state.timetable.timezone)}
-                    <span>Edit time</span>
-                  </button>
-                )}
-                {itemState === 'upcoming' &&
-                  onReorder &&
-                  state.nextIndex !== index && (
-                    <button
-                      type="button"
-                      className="timeline-item__reorder"
-                      onClick={() => onReorder(observation.item.id)}
-                    >
-                      Do this next
-                    </button>
-                  )}
               </article>
-              {isCurrentMarker && (
-                <div
-                  className="timeline-now"
-                  ref={markerRef}
-                  style={{ top: `${nowFraction * sectionHeight}px` }}
-                >
-                  <time>{formatTimeInZone(now, state.timetable.timezone)}</time>
-                </div>
-              )}
             </li>
-            {gap && (
-              <li className="timeline-gap">
-                <span>Between tasks</span>
-                <strong>{formatStopwatch(gap.durationMs)}</strong>
-                <time>
-                  {formatTimeInZone(gap.startedAt, state.timetable.timezone)}–
-                  {formatTimeInZone(gap.endedAt, state.timetable.timezone)}
-                </time>
-              </li>
-            )}
-            </Fragment>
-          );
-        })}
-      </ol>
-    </div>
+          ))}
+        </ol>
+      </div>
+
+      {editingSegmentId && (
+        <div className="timeline-draft-bar" role="status">
+          <div>
+            <strong>{changedEvents.length} changed</strong>
+            <span>{activeEdge ? 'Boundary selected' : 'Drag an edge'}</span>
+          </div>
+          {saveError && <span className="timeline-draft-bar__error">{saveError}</span>}
+          <button type="button" className="button button--ghost" disabled={busy} onClick={cancelEdit}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="button button--primary"
+            disabled={busy || changedEvents.length === 0}
+            onClick={() => {
+              setSaveError(null);
+              void onSaveTimeline?.(changedEvents).then((saved) => {
+                if (saved) cancelEdit();
+                else setSaveError('Could not save these boundaries.');
+              });
+            }}
+          >
+            Save
+          </button>
+        </div>
+      )}
+    </>
   );
 };

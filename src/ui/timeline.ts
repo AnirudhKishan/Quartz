@@ -1,9 +1,9 @@
 import type { PlannedItem } from '../domain/analysis';
-import { getLocalParts, parseClockTime, zonedLocalTimeToUtc } from '../domain/time';
-import type { RunEvent, RunState } from '../domain/types';
 
 const MIN_SECTION_HEIGHT = 96;
 const MAX_SECTION_HEIGHT = 190;
+export const TIMELINE_SNAP_MS = 5 * 60_000;
+const MAGNETIC_RANGE_MS = 3 * 60_000;
 
 export const timelineSectionHeight = (plannedDurationMs: number): number => {
   const minutes = Math.max(1, plannedDurationMs / 60_000);
@@ -20,74 +20,79 @@ export const instantFraction = (plan: PlannedItem, instant: Date): number | null
   return Math.min(1, Math.max(0, (value - start) / (end - start)));
 };
 
-const pad = (value: number): string => String(value).padStart(2, '0');
-
-export const toLocalDateTimeValue = (instant: Date, timezone: string): string => {
-  const parts = getLocalParts(instant, timezone);
-  return `${String(parts.year).padStart(4, '0')}-${pad(parts.month)}-${pad(parts.day)}T${pad(parts.hour)}:${pad(parts.minute)}`;
-};
-
-export const fromLocalDateTimeValue = (value: string, timezone: string): Date | null => {
-  const match = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})$/.exec(value);
-  if (!match) return null;
-  return zonedLocalTimeToUtc(match[1]!, parseClockTime(match[2]!), timezone);
-};
-
-export interface TransitionContext {
-  readonly terminal: RunEvent;
-  readonly nextStarted: RunEvent | null;
-  readonly fromLabel: string;
-  readonly toLabel: string;
-  readonly minimum: Date;
-  readonly maximum: Date;
+export interface TimelineDraftSegment {
+  readonly startEventId: string;
+  readonly endEventId: string | null;
+  readonly start: number;
+  readonly end: number | null;
 }
 
-export const getTransitionContext = (
-  state: RunState,
-  transitionId: string,
-  observedAt: Date,
-): TransitionContext | null => {
-  const index = state.effectiveEvents.findIndex(
-    (event) =>
-      event.id === transitionId &&
-      event.transitionId === transitionId &&
-      (event.type === 'completed' ||
-        event.type === 'skipped' ||
-        (event.seq === 1 && event.type === 'started')),
-  );
-  const terminal = state.effectiveEvents[index];
-  if (!terminal) return null;
-  const isInitialStart = terminal.seq === 1 && terminal.type === 'started';
+export interface BoundaryMove {
+  readonly updates: ReadonlyMap<string, number>;
+  readonly magnetic: boolean;
+}
 
-  const previous = state.effectiveEvents[index - 1];
-  const candidateStarted = state.effectiveEvents[index + 1];
-  const nextStarted =
-    !isInitialStart &&
-    candidateStarted?.transitionId === transitionId &&
-    candidateStarted.type === 'started'
-      ? candidateStarted
-      : null;
-  const nextBoundary = nextStarted ? state.effectiveEvents[index + 2] : candidateStarted;
-  const maximum = new Date(
-    Math.min(nextBoundary?.occurredAt.getTime() ?? observedAt.getTime(), observedAt.getTime()),
-  );
+export interface BoundaryLimits {
+  readonly minimum?: number;
+  readonly maximum?: number;
+}
 
-  return {
-    terminal,
-    nextStarted,
-    fromLabel: isInitialStart
-      ? 'Day start'
-      : state.timetable.items.find((item) => item.id === terminal.itemId)?.label ??
-        terminal.itemId,
-    toLabel: isInitialStart
-      ? state.timetable.items[0]?.label ?? terminal.itemId
-      : nextStarted
-        ? state.timetable.items.find((item) => item.id === nextStarted.itemId)?.label ??
-          nextStarted.itemId
-        : 'Day complete',
-    minimum: isInitialStart
-      ? zonedLocalTimeToUtc(state.run.localDate, 0, state.timetable.timezone)
-      : previous?.occurredAt ?? state.run.startedAt,
-    maximum,
-  };
+const snapToGrid = (value: number): number =>
+  Math.round(value / TIMELINE_SNAP_MS) * TIMELINE_SNAP_MS;
+
+/**
+ * Move one segment edge while preserving chronological segment order.
+ *
+ * Moving toward a neighbor snaps to it. Crossing it carries only that immediate
+ * edge, which resizes the adjacent segment instead of creating an overlap.
+ */
+export const moveTimelineBoundary = (
+  segments: readonly TimelineDraftSegment[],
+  segmentIndex: number,
+  edge: 'start' | 'end',
+  rawValue: number,
+  dayMinimum: number,
+  observedAt: number,
+  limits: BoundaryLimits = {},
+): BoundaryMove => {
+  const segment = segments[segmentIndex];
+  if (!segment) return { updates: new Map(), magnetic: false };
+  const updates = new Map<string, number>();
+  let value = snapToGrid(rawValue);
+  let magnetic = false;
+
+  if (edge === 'start') {
+    const previous = segments[segmentIndex - 1];
+    const maximum = Math.min(segment.end ?? observedAt, limits.maximum ?? Infinity);
+    const minimum = Math.max(previous?.start ?? dayMinimum, limits.minimum ?? -Infinity);
+    value = Math.min(maximum, Math.max(minimum, value));
+    if (previous?.end !== null && previous?.end !== undefined) {
+      if (Math.abs(value - previous.end) <= MAGNETIC_RANGE_MS) {
+        value = previous.end;
+        magnetic = true;
+      } else if (value < previous.end && previous.endEventId) {
+        updates.set(previous.endEventId, value);
+      }
+    }
+    updates.set(segment.startEventId, value);
+    return { updates, magnetic };
+  }
+
+  if (!segment.endEventId || segment.end === null) {
+    return { updates, magnetic };
+  }
+  const next = segments[segmentIndex + 1];
+  const minimum = Math.max(segment.start, limits.minimum ?? -Infinity);
+  const maximum = Math.min(next?.end ?? observedAt, limits.maximum ?? Infinity);
+  value = Math.min(maximum, Math.max(minimum, value));
+  if (next) {
+    if (Math.abs(value - next.start) <= MAGNETIC_RANGE_MS) {
+      value = next.start;
+      magnetic = true;
+    } else if (value > next.start) {
+      updates.set(next.startEventId, value);
+    }
+  }
+  updates.set(segment.endEventId, value);
+  return { updates, magnetic };
 };

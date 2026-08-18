@@ -1,14 +1,19 @@
 import { useEffect, useState } from 'react';
 
-import type { RunEvent, TransitionKind } from '../../domain/types';
+import type { TimelineEventReplacement, TransitionKind } from '../../domain/types';
 import { navigate } from '../router';
 import { useApp } from '../store';
 import { useElapsed } from '../useElapsed';
 import { ClearDataControl } from '../components/ClearDataControl';
 import { DayTimeline } from '../components/DayTimeline';
 import { EmptyState, Screen } from '../components/Screen';
-import { TransitionTimeDialog } from '../components/TransitionTimeDialog';
-import { TimelineEditor } from '../components/TimelineEditor';
+import { TaskDetailsPanel } from '../components/TaskDetailsPanel';
+
+interface SelectedActivity {
+  readonly id: string;
+  readonly anchorTop: number;
+  readonly trigger: HTMLElement;
+}
 
 export const ActiveRunScreen = () => {
   const {
@@ -17,29 +22,36 @@ export const ActiveRunScreen = () => {
     busy,
     advance,
     startNext,
+    startUnplanned,
+    pause,
+    resume,
+    endPaused,
     reorderUpcoming,
     undo,
-    correctTransitionTime,
     editTimeline,
     skipDay,
     notice,
     dismissNotice,
   } = useApp();
   const [confirmingSkipDay, setConfirmingSkipDay] = useState(false);
-  const [selectedTransition, setSelectedTransition] = useState<RunEvent | null>(null);
+  const [selectedActivity, setSelectedActivity] = useState<SelectedActivity | null>(null);
   const [showUndo, setShowUndo] = useState(false);
   const [editingTimeline, setEditingTimeline] = useState(false);
   const betweenStartedAt =
     activeState?.phase === 'between'
       ? [...activeState.effectiveEvents]
           .reverse()
-          .find((event) => event.type === 'completed' || event.type === 'skipped')
-          ?.occurredAt ?? null
+          .find(
+            (event) =>
+              event.type === 'completed' ||
+              event.type === 'skipped' ||
+              event.type === 'paused',
+          )?.occurredAt ?? null
       : null;
   const elapsed = useElapsed(
     activeState?.phase === 'between'
       ? betweenStartedAt
-      : activeState?.currentItemStartedAt ?? null,
+      : activeState?.currentActivityStartedAt ?? null,
     services.clock,
   );
 
@@ -57,19 +69,31 @@ export const ActiveRunScreen = () => {
     );
   }
 
-  const { run, timetable, status, phase, canUndo, currentItem, nextItem } = activeState;
+  const {
+    run,
+    timetable,
+    status,
+    phase,
+    canUndo,
+    currentActivity,
+    resumeTarget,
+    nextItem,
+  } = activeState;
   const completed = status === 'completed';
   const now = services.clock.now();
 
-  const handleAdvance = async (kind: TransitionKind) => {
-    await advance(kind);
+  const showUndoAfter = async (action: () => Promise<void>) => {
+    await action();
     setShowUndo(true);
   };
-
+  const handleAdvance = (kind: TransitionKind) =>
+    showUndoAfter(() => advance(kind));
   const handleUndo = async () => {
     await undo();
     setShowUndo(false);
   };
+  const saveTimeline = async (replacements: readonly TimelineEventReplacement[]) =>
+    editTimeline(replacements);
 
   return (
     <Screen
@@ -89,21 +113,10 @@ export const ActiveRunScreen = () => {
             ? 'Every step is recorded.'
             : phase === 'between'
               ? 'Between tasks'
-              : `${currentItem?.label ?? 'Day'} in progress`}
+              : phase === 'paused'
+                ? `${resumeTarget?.label ?? 'Task'} paused`
+                : `${currentActivity?.label ?? 'Day'} in progress`}
         </span>
-        {!editingTimeline && (
-          <button
-            type="button"
-            className="link"
-            disabled={busy}
-            onClick={() => {
-              setShowUndo(false);
-              setEditingTimeline(true);
-            }}
-          >
-            Edit timeline
-          </button>
-        )}
         <details className="overflow-menu">
           <summary aria-label="More actions">
             <span className="sr-only">More actions</span>
@@ -111,17 +124,6 @@ export const ActiveRunScreen = () => {
           </summary>
           <div className="overflow-menu__panel">
             {!completed && (
-              <>
-              {phase === 'running' && (
-                <button
-                  type="button"
-                  className="menu-action"
-                  disabled={busy}
-                  onClick={() => void handleAdvance('skip')}
-                >
-                  Skip current task
-                </button>
-              )}
               <button
                 type="button"
                 className="menu-action"
@@ -130,7 +132,6 @@ export const ActiveRunScreen = () => {
               >
                 Skip day
               </button>
-              </>
             )}
             <ClearDataControl compact />
           </div>
@@ -140,32 +141,28 @@ export const ActiveRunScreen = () => {
       {notice && (
         <p className="notice" role="status">
           {notice}{' '}
-          <button type="button" className="link" onClick={dismissNotice}>Dismiss</button>
+          <button type="button" className="link" onClick={dismissNotice}>
+            Dismiss
+          </button>
         </p>
       )}
 
-      {editingTimeline ? (
-        <TimelineEditor
-          state={activeState}
-          observedAt={now}
-          busy={busy}
-          onCancel={() => setEditingTimeline(false)}
-          onSave={async (replacements) => {
-            const saved = await editTimeline(replacements);
-            if (saved) setEditingTimeline(false);
-            return saved;
-          }}
-        />
-      ) : (
-        <DayTimeline
-          state={activeState}
-          now={now}
-          elapsedMs={elapsed}
-          onEditTransition={setSelectedTransition}
-          onReorder={(itemId) => void reorderUpcoming(itemId)}
-          autoFocusCurrent={!completed}
-        />
-      )}
+      <DayTimeline
+        state={activeState}
+        now={now}
+        elapsedMs={elapsed}
+        selectedActivityId={selectedActivity?.id}
+        onSelectActivity={(id, anchorTop, trigger) =>
+          setSelectedActivity({ id, anchorTop, trigger })
+        }
+        onSaveTimeline={saveTimeline}
+        onEditingChange={(editing) => {
+          setEditingTimeline(editing);
+          if (editing) setSelectedActivity(null);
+        }}
+        busy={busy}
+        autoFocusCurrent={!completed}
+      />
 
       {editingTimeline ? null : completed ? (
         <section className="completion-actions">
@@ -177,7 +174,10 @@ export const ActiveRunScreen = () => {
         <>
           <section className="between-summary" aria-live="polite">
             <span>Between tasks</span>
-            <strong>{Math.floor(elapsed / 60_000)}:{String(Math.floor(elapsed / 1000) % 60).padStart(2, '0')}</strong>
+            <strong>
+              {Math.floor(elapsed / 60_000)}:
+              {String(Math.floor(elapsed / 1000) % 60).padStart(2, '0')}
+            </strong>
             <small>This time is reported separately.</small>
           </section>
           <div className="sticky-actions sticky-actions--single">
@@ -185,14 +185,31 @@ export const ActiveRunScreen = () => {
               type="button"
               className="button button--dominant"
               disabled={busy || !nextItem}
-              onClick={() => {
-                void startNext().then(() => setShowUndo(true));
-              }}
+              onClick={() => void showUndoAfter(startNext)}
             >
               Start {nextItem?.label ?? 'next task'}
             </button>
           </div>
         </>
+      ) : phase === 'paused' ? (
+        <div className="sticky-actions">
+          <button
+            type="button"
+            className="button button--dominant"
+            disabled={busy}
+            onClick={() => void showUndoAfter(resume)}
+          >
+            Resume {resumeTarget?.label ?? 'task'}
+          </button>
+          <button
+            type="button"
+            className="button button--secondary"
+            disabled={busy}
+            onClick={() => void showUndoAfter(endPaused)}
+          >
+            End {resumeTarget?.label ?? 'task'}
+          </button>
+        </div>
       ) : (
         <div className="sticky-actions">
           <button
@@ -216,7 +233,7 @@ export const ActiveRunScreen = () => {
         </div>
       )}
 
-      {showUndo && canUndo && (
+      {showUndo && canUndo && !editingTimeline && (
         <div
           className={`undo-toast${phase === 'between' ? ' undo-toast--between' : ''}`}
           role="status"
@@ -224,49 +241,60 @@ export const ActiveRunScreen = () => {
           <span>
             {completed
               ? 'Day completed'
-              : phase === 'between'
-                ? 'Task finished'
-                : `Moved to ${currentItem?.label ?? 'next item'}`}
+              : phase === 'paused'
+                ? `${resumeTarget?.label ?? 'Task'} paused`
+                : phase === 'between'
+                  ? 'Task finished'
+                  : `Now tracking ${currentActivity?.label ?? 'the day'}`}
           </span>
           <button type="button" className="link" disabled={busy} onClick={() => void handleUndo()}>
             Undo
           </button>
-          <button type="button" className="undo-toast__dismiss" aria-label="Dismiss Undo" onClick={() => setShowUndo(false)}>
+          <button
+            type="button"
+            className="undo-toast__dismiss"
+            aria-label="Dismiss Undo"
+            onClick={() => setShowUndo(false)}
+          >
             ×
           </button>
         </div>
       )}
 
-      {selectedTransition && (
-        <TransitionTimeDialog
+      {selectedActivity && !editingTimeline && (
+        <TaskDetailsPanel
           state={activeState}
-          transition={selectedTransition}
-          observedAt={now}
+          activityId={selectedActivity.id}
+          anchorTop={selectedActivity.anchorTop}
+          returnFocus={selectedActivity.trigger}
           busy={busy}
-          onClose={() => setSelectedTransition(null)}
-          onSave={async (correctedAt) => {
-            if (
-              await correctTransitionTime(
-                selectedTransition.transitionId,
-                selectedTransition.occurredAt,
-                correctedAt,
-              )
-            ) {
-              setSelectedTransition(null);
-            }
-          }}
+          onClose={() => setSelectedActivity(null)}
+          onReorder={(itemId) => reorderUpcoming(itemId)}
+          onPause={() => showUndoAfter(pause)}
+          onStartUnplanned={(label) => showUndoAfter(() => startUnplanned(label))}
+          onSkip={() => handleAdvance('skip')}
         />
       )}
 
       {confirmingSkipDay && (
         <div className="modal-backdrop">
-          <section className="modal-sheet" role="alertdialog" aria-modal="true" aria-labelledby="skip-day-title">
+          <section
+            className="modal-sheet"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="skip-day-title"
+          >
             <h2 id="skip-day-title">Stop tracking the whole day?</h2>
             <p className="modal-sheet__meta">
               Everything recorded today will be excluded from analysis. This cannot be undone.
             </p>
             <div className="modal-sheet__actions">
-              <button type="button" className="button button--ghost" disabled={busy} onClick={() => setConfirmingSkipDay(false)}>
+              <button
+                type="button"
+                className="button button--ghost"
+                disabled={busy}
+                onClick={() => setConfirmingSkipDay(false)}
+              >
                 Cancel
               </button>
               <button

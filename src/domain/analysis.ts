@@ -7,7 +7,14 @@
 
 import { reconstructRunState } from './runState';
 import { parseClockTime, zonedLocalTimeToUtc } from './time';
-import type { Run, RunEvent, Timetable, TimetableItem } from './types';
+import type {
+  ActivitySegment,
+  Run,
+  RunEvent,
+  Timetable,
+  TimetableItem,
+  TrackedOccurrence,
+} from './types';
 
 export interface PlannedItem {
   readonly item: TimetableItem;
@@ -85,6 +92,21 @@ export interface ItemObservation extends PlannedItem {
   readonly positiveDurationDeviationMs: number;
   readonly executionIndex: number;
   readonly reordered: boolean;
+  readonly segments: readonly ActivitySegment[];
+  readonly segmentCount: number;
+}
+
+export interface InsertedActivityObservation {
+  readonly occurrence: TrackedOccurrence;
+  readonly segments: readonly ActivitySegment[];
+  readonly actualStart: Date;
+  readonly actualEnd: Date | null;
+  readonly actualDurationMs: number | null;
+  readonly segmentCount: number;
+}
+
+export interface ChronologicalSegmentObservation extends ActivitySegment {
+  readonly occurrence: TrackedOccurrence;
 }
 
 export interface BetweenTaskObservation {
@@ -95,50 +117,12 @@ export interface BetweenTaskObservation {
   readonly durationMs: number;
 }
 
-interface ActualRecord {
-  start: Date | null;
-  end: Date | null;
-  skipped: boolean;
-  reached: boolean;
-}
-
-const collectActuals = (
-  timetable: Timetable,
-  effectiveEvents: readonly RunEvent[],
-): Map<string, ActualRecord> => {
-  const actuals = new Map<string, ActualRecord>();
-  for (const item of timetable.items) {
-    actuals.set(item.id, { start: null, end: null, skipped: false, reached: false });
-  }
-
-  for (const event of effectiveEvents) {
-    const record = actuals.get(event.itemId);
-    if (!record) continue;
-    switch (event.type) {
-      case 'started':
-        record.start = event.occurredAt;
-        record.reached = true;
-        break;
-      case 'completed':
-        record.end = event.occurredAt;
-        record.skipped = false;
-        break;
-      case 'skipped':
-        record.skipped = true;
-        record.end = null;
-        break;
-      default:
-        break;
-    }
-  }
-
-  return actuals;
-};
-
 export interface RunReport {
   readonly run: Run;
   readonly timetable: Timetable;
   readonly observations: readonly ItemObservation[];
+  readonly insertedObservations: readonly InsertedActivityObservation[];
+  readonly chronologicalSegments: readonly ChronologicalSegmentObservation[];
   /** Actual day start minus the first item's planned start. */
   readonly dayStartDeviationMs: number;
   /** Actual completion minus the last item's planned end; null while active. */
@@ -150,6 +134,7 @@ export interface RunReport {
   readonly totalPositiveDurationDeviationMs: number;
   readonly betweenTasks: readonly BetweenTaskObservation[];
   readonly totalBetweenTasksMs: number;
+  readonly totalInsertedDurationMs: number;
   readonly reordered: boolean;
 }
 
@@ -161,27 +146,49 @@ export const buildRunReport = (
   const state = reconstructRunState(timetable, run, events);
   const planned = computePlannedSchedule(timetable, run.localDate);
   const plannedById = new Map(planned.map((item) => [item.item.id, item]));
-  const actuals = collectActuals(timetable, state.effectiveEvents);
+  const occurrenceById = new Map(
+    state.occurrences.map((occurrence) => [occurrence.id, occurrence]),
+  );
+  const segmentsByOccurrence = new Map<string, ActivitySegment[]>();
+  state.segments.forEach((segment) => {
+    const list = segmentsByOccurrence.get(segment.occurrenceId) ?? [];
+    list.push(segment);
+    segmentsByOccurrence.set(segment.occurrenceId, list);
+  });
+  const completedIds = new Set(state.completedOccurrenceIds);
+  const skippedIds = new Set(state.skippedOccurrenceIds);
 
   const observations: ItemObservation[] = state.orderedItems.map((item, executionIndex) => {
     const plan = plannedById.get(item.id);
     if (!plan) throw new Error(`Missing planned item ${item.id}`);
-    const actual = actuals.get(plan.item.id) ?? {
-      start: null,
-      end: null,
-      skipped: false,
-      reached: false,
-    };
-
-    const measurable = actual.reached && !actual.skipped;
+    const segments = segmentsByOccurrence.get(item.id) ?? [];
+    const actualStart = segments[0]?.startedAt ?? null;
+    const reached = segments.length > 0;
+    const skipped = skippedIds.has(item.id);
+    const finished = completedIds.has(item.id);
+    const lastSegment = segments[segments.length - 1];
+    const actualEnd = finished && !skipped ? (lastSegment?.endedAt ?? null) : null;
+    const measurable = reached && !skipped;
     const reordered = executionIndex !== plan.index;
+    const firstSegmentIndex = state.segments.findIndex(
+      (segment) => segment.occurrenceId === item.id,
+    );
+    const precedingSegment =
+      firstSegmentIndex > 0 ? state.segments[firstSegmentIndex - 1] : undefined;
+    const precededByInserted =
+      precedingSegment !== undefined &&
+      occurrenceById.get(precedingSegment.occurrenceId)?.kind === 'inserted';
     const startDeviationMs =
-      measurable && actual.start && !reordered
-        ? actual.start.getTime() - plan.plannedStartUtc.getTime()
+      measurable && actualStart && !reordered && !precededByInserted
+        ? actualStart.getTime() - plan.plannedStartUtc.getTime()
         : null;
     const actualDurationMs =
-      measurable && actual.start && actual.end
-        ? actual.end.getTime() - actual.start.getTime()
+      measurable && finished && segments.every((segment) => segment.endedAt !== null)
+        ? segments.reduce(
+            (total, segment) =>
+              total + (segment.endedAt!.getTime() - segment.startedAt.getTime()),
+            0,
+          )
         : null;
     const durationDeviationMs =
       actualDurationMs === null ? null : actualDurationMs - plan.plannedDurationMs;
@@ -192,10 +199,10 @@ export const buildRunReport = (
       localDate: run.localDate,
       timetableId: timetable.id,
       timetableVersion: timetable.version,
-      reached: actual.reached,
-      skipped: actual.skipped,
-      actualStart: actual.start,
-      actualEnd: actual.skipped ? null : actual.end,
+      reached,
+      skipped,
+      actualStart,
+      actualEnd,
       startDeviationMs,
       actualDurationMs,
       durationDeviationMs,
@@ -203,24 +210,60 @@ export const buildRunReport = (
         durationDeviationMs !== null && durationDeviationMs > 0 ? durationDeviationMs : 0,
       executionIndex,
       reordered,
+      segments,
+      segmentCount: segments.length,
     };
   });
 
   const betweenTasks: BetweenTaskObservation[] = [];
-  state.effectiveEvents.forEach((event, index) => {
-    if (event.type !== 'completed' && event.type !== 'skipped') return;
-    const next = state.effectiveEvents[index + 1];
-    if (!next || next.type !== 'started') return;
-    const durationMs = next.occurredAt.getTime() - event.occurredAt.getTime();
+  state.segments.forEach((segment, index) => {
+    if (!segment.endedAt) return;
+    const next = state.segments[index + 1];
+    if (!next) return;
+    const durationMs = next.startedAt.getTime() - segment.endedAt.getTime();
     if (durationMs <= 0) return;
     betweenTasks.push({
-      afterItemId: event.itemId,
-      beforeItemId: next.itemId,
-      startedAt: event.occurredAt,
-      endedAt: next.occurredAt,
+      afterItemId: segment.occurrenceId,
+      beforeItemId: next.occurrenceId,
+      startedAt: segment.endedAt,
+      endedAt: next.startedAt,
       durationMs,
     });
   });
+
+  const insertedObservations: InsertedActivityObservation[] = state.occurrences
+    .filter((occurrence) => occurrence.kind === 'inserted')
+    .map((occurrence) => {
+      const segments = segmentsByOccurrence.get(occurrence.id) ?? [];
+      const first = segments[0];
+      if (!first) throw new Error(`Inserted occurrence ${occurrence.id} has no segment`);
+      const finished = completedIds.has(occurrence.id);
+      const last = segments[segments.length - 1];
+      const actualEnd = finished ? (last?.endedAt ?? null) : null;
+      const actualDurationMs =
+        finished && segments.every((segment) => segment.endedAt !== null)
+          ? segments.reduce(
+              (total, segment) =>
+                total + (segment.endedAt!.getTime() - segment.startedAt.getTime()),
+              0,
+            )
+          : null;
+      return {
+        occurrence,
+        segments,
+        actualStart: first.startedAt,
+        actualEnd,
+        actualDurationMs,
+        segmentCount: segments.length,
+      };
+    });
+  const chronologicalSegments: ChronologicalSegmentObservation[] = state.segments.map(
+    (segment) => {
+      const occurrence = occurrenceById.get(segment.occurrenceId);
+      if (!occurrence) throw new Error(`Segment ${segment.id} has no occurrence`);
+      return { ...segment, occurrence };
+    },
+  );
 
   const firstPlanned = planned[0];
   const lastPlanned = planned[planned.length - 1];
@@ -233,6 +276,8 @@ export const buildRunReport = (
     run,
     timetable,
     observations,
+    insertedObservations,
+    chronologicalSegments,
     dayStartDeviationMs: firstPlanned
       ? run.startedAt.getTime() - firstPlanned.plannedStartUtc.getTime()
       : 0,
@@ -250,6 +295,10 @@ export const buildRunReport = (
     ),
     betweenTasks,
     totalBetweenTasksMs: betweenTasks.reduce((total, gap) => total + gap.durationMs, 0),
+    totalInsertedDurationMs: insertedObservations.reduce(
+      (total, observation) => total + (observation.actualDurationMs ?? 0),
+      0,
+    ),
     reordered: observations.some((observation) => observation.reordered),
   };
 };

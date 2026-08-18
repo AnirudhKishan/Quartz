@@ -84,79 +84,6 @@ describe('Undo', () => {
     expect(driver.state.currentItemStartedAt?.toISOString()).toBe('2026-03-02T00:00:00.000Z');
   });
 
-  describe('transition time correction', () => {
-    it('updates the completed and started events that share a transition', () => {
-      const driver = new RunDriver(simpleTimetable, START).next(at('2026-03-02T00:50:00.000Z'));
-      const transitionId = driver.events[1]!.transitionId;
-
-      driver.correct(
-        transitionId,
-        at('2026-03-02T00:35:00.000Z'),
-        at('2026-03-02T01:00:00.000Z'),
-      );
-
-      expect(driver.events[1]?.occurredAt.toISOString()).toBe('2026-03-02T00:35:00.000Z');
-      expect(driver.events[2]?.occurredAt.toISOString()).toBe('2026-03-02T00:35:00.000Z');
-      expect(driver.state.currentItemStartedAt?.toISOString()).toBe('2026-03-02T00:35:00.000Z');
-    });
-
-    it('updates the first event and run start together', () => {
-      const driver = new RunDriver(simpleTimetable, START).next(at('2026-03-02T00:50:00.000Z'));
-
-      driver.correct(
-        driver.events[0]!.transitionId,
-        at('2026-03-02T00:10:00.000Z'),
-        at('2026-03-02T01:00:00.000Z'),
-      );
-
-      expect(driver.events[0]?.occurredAt.toISOString()).toBe('2026-03-02T00:10:00.000Z');
-      expect(driver.run.startedAt.toISOString()).toBe('2026-03-02T00:10:00.000Z');
-    });
-
-    it('rejects a correction that crosses a neighboring transition', () => {
-      const driver = new RunDriver(simpleTimetable, START)
-        .next(at('2026-03-02T00:40:00.000Z'))
-        .next(at('2026-03-02T01:40:00.000Z'));
-
-      expect(() =>
-        driver.correct(
-          driver.events[1]!.transitionId,
-          at('2026-03-02T01:41:00.000Z'),
-          at('2026-03-02T02:00:00.000Z'),
-        ),
-      ).toThrow(/between the neighboring changeovers/);
-    });
-
-    it('updates completedAt when the final boundary is corrected', () => {
-      const driver = new RunDriver(simpleTimetable, START)
-        .next(at('2026-03-02T00:40:00.000Z'))
-        .next(at('2026-03-02T01:40:00.000Z'))
-        .next(at('2026-03-02T02:20:00.000Z'));
-
-      driver.correct(
-        driver.events[5]!.transitionId,
-        at('2026-03-02T02:10:00.000Z'),
-        at('2026-03-02T03:00:00.000Z'),
-      );
-
-      expect(driver.run.completedAt?.toISOString()).toBe('2026-03-02T02:10:00.000Z');
-      expect(driver.state.status).toBe('completed');
-    });
-
-    it('keeps a corrected transition undoable', () => {
-      const driver = new RunDriver(simpleTimetable, START).next(at('2026-03-02T00:50:00.000Z'));
-      driver
-        .correct(
-          driver.events[1]!.transitionId,
-          at('2026-03-02T00:35:00.000Z'),
-          at('2026-03-02T01:00:00.000Z'),
-        )
-        .undo(at('2026-03-02T01:01:00.000Z'));
-
-      expect(driver.state.currentItem?.id).toBe('wake');
-    });
-  });
-
   it('appends rather than deleting, so the history stays auditable', () => {
     const driver = new RunDriver(simpleTimetable, START)
       .next(at('2026-03-02T00:40:00.000Z'))
@@ -388,6 +315,102 @@ describe('between tasks and today order', () => {
     );
     expect(driver.events[1]?.occurredAt.toISOString()).toBe('2026-03-02T00:30:00.000Z');
     expect(driver.events[2]?.occurredAt.toISOString()).toBe('2026-03-02T00:40:00.000Z');
+  });
+});
+
+describe('inserted activities and segmented tasks', () => {
+  it('starts an unplanned task atomically and Undo removes it', () => {
+    const driver = new RunDriver(simpleTimetable, START).startUnplanned(
+      'Phone call',
+      at('2026-03-02T00:20:00.000Z'),
+    );
+
+    expect(driver.state.currentActivity).toMatchObject({
+      label: 'Phone call',
+      kind: 'inserted',
+      insertedOrigin: 'unplanned',
+    });
+    expect(driver.state.nextItem?.id).toBe('gym');
+    expect(driver.state.segments).toHaveLength(2);
+    expect(driver.state.segments[0]?.endedAt?.toISOString()).toBe(
+      '2026-03-02T00:20:00.000Z',
+    );
+
+    driver.undo(at('2026-03-02T00:21:00.000Z'));
+    expect(driver.state.currentActivity?.id).toBe('wake');
+    expect(driver.state.occurrences.some((occurrence) => occurrence.label === 'Phone call')).toBe(
+      false,
+    );
+  });
+
+  it('pauses and resumes the same planned occurrence as another segment', () => {
+    const driver = new RunDriver(simpleTimetable, START)
+      .pause(at('2026-03-02T00:20:00.000Z'))
+      .resume(at('2026-03-02T00:30:00.000Z'));
+
+    expect(driver.state.phase).toBe('running');
+    expect(driver.state.currentActivity?.id).toBe('wake');
+    expect(driver.state.segments.map((segment) => segment.occurrenceId)).toEqual([
+      'wake',
+      expect.stringContaining(':occurrence'),
+      'wake',
+    ]);
+    expect(driver.state.segments[0]?.endType).toBe('paused');
+    expect(driver.state.nextItem?.id).toBe('gym');
+  });
+
+  it('supports repeated pauses without duplicating the planned occurrence', () => {
+    const driver = new RunDriver(simpleTimetable, START)
+      .pause(at('2026-03-02T00:10:00.000Z'))
+      .resume(at('2026-03-02T00:15:00.000Z'))
+      .pause(at('2026-03-02T00:20:00.000Z'));
+
+    expect(driver.state.phase).toBe('paused');
+    expect(driver.state.resumeTarget?.id).toBe('wake');
+    expect(driver.state.occurrences.filter((occurrence) => occurrence.id === 'wake')).toHaveLength(
+      1,
+    );
+    expect(
+      driver.state.occurrences.filter((occurrence) => occurrence.insertedOrigin === 'pause'),
+    ).toHaveLength(2);
+  });
+
+  it('undoes Resume back to the same paused interruption', () => {
+    const driver = new RunDriver(simpleTimetable, START)
+      .pause(at('2026-03-02T00:20:00.000Z'))
+      .resume(at('2026-03-02T00:30:00.000Z'))
+      .undo(at('2026-03-02T00:31:00.000Z'));
+
+    expect(driver.state.phase).toBe('paused');
+    expect(driver.state.currentActivity?.label).toBe('Between tasks');
+    expect(driver.state.resumeTarget?.id).toBe('wake');
+  });
+
+  it('ends a paused task without ending its running interruption', () => {
+    const driver = new RunDriver(simpleTimetable, START)
+      .pause(at('2026-03-02T00:20:00.000Z'))
+      .endPaused(at('2026-03-02T00:30:00.000Z'));
+
+    expect(driver.state.phase).toBe('running');
+    expect(driver.state.currentActivity?.label).toBe('Between tasks');
+    expect(driver.state.resumeTarget).toBeNull();
+    expect(driver.state.nextItem?.id).toBe('gym');
+    expect(driver.state.segments[0]?.endedAt?.toISOString()).toBe(
+      '2026-03-02T00:20:00.000Z',
+    );
+
+    driver.next(at('2026-03-02T00:35:00.000Z'));
+    expect(driver.state.currentActivity?.id).toBe('gym');
+  });
+
+  it('undoes End back to the paused state', () => {
+    const driver = new RunDriver(simpleTimetable, START)
+      .pause(at('2026-03-02T00:20:00.000Z'))
+      .endPaused(at('2026-03-02T00:30:00.000Z'))
+      .undo(at('2026-03-02T00:31:00.000Z'));
+
+    expect(driver.state.phase).toBe('paused');
+    expect(driver.state.resumeTarget?.id).toBe('wake');
   });
 });
 

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { sequentialIdGenerator } from '../domain/clock';
+import { reconstructRunState } from '../domain/runState';
 import { simpleTimetable, simpleTimetableV2 } from '../test/fixtures';
 import type { TimetableRepository } from '../application/repository';
 import { IndexedDbRepository } from './indexedDbRepository';
@@ -182,6 +183,88 @@ describe.each(adapters)('$name satisfies the repository contract', ({ create }) 
     expect(events.at(-1)?.transitionId).toBe(events.at(-1)?.id);
   });
 
+  it('persists an inserted task and reverses its whole transition on Undo', async () => {
+      const run = await repository.createRun(ref, START);
+      await repository.startUnplanned({
+        runId: run.id,
+        label: 'Phone call',
+        occurredAt: new Date('2026-03-02T00:10:00.000Z'),
+        expectedItemId: 'wake',
+        expectedSeq: 1,
+      });
+
+      let stored = (await repository.getRun(run.id))!;
+      let events = await repository.getRunEvents(run.id);
+      let state = reconstructRunState(simpleTimetable, stored, events);
+      expect(state.currentActivity).toMatchObject({ label: 'Phone call', kind: 'inserted' });
+      expect(events).toHaveLength(3);
+
+      await repository.undoLastTransition(run.id, new Date('2026-03-02T00:11:00.000Z'));
+      stored = (await repository.getRun(run.id))!;
+      events = await repository.getRunEvents(run.id);
+      state = reconstructRunState(simpleTimetable, stored, events);
+      expect(state.currentActivity?.id).toBe('wake');
+      expect(state.occurrences.some((occurrence) => occurrence.label === 'Phone call')).toBe(false);
+  });
+
+  it('persists Pause and Resume as segmented activity transitions', async () => {
+      const run = await repository.createRun(ref, START);
+      await repository.pause({
+        runId: run.id,
+        occurredAt: new Date('2026-03-02T00:10:00.000Z'),
+        expectedItemId: 'wake',
+        expectedSeq: 1,
+      });
+
+      let stored = (await repository.getRun(run.id))!;
+      let events = await repository.getRunEvents(run.id);
+      let state = reconstructRunState(simpleTimetable, stored, events);
+      expect(state.phase).toBe('paused');
+      expect(state.resumeTarget?.id).toBe('wake');
+
+      await repository.resume({
+        runId: run.id,
+        occurredAt: new Date('2026-03-02T00:15:00.000Z'),
+        expectedItemId: state.currentActivity!.id,
+        expectedResumeTargetId: 'wake',
+        expectedSeq: state.lastSeq,
+      });
+      stored = (await repository.getRun(run.id))!;
+      events = await repository.getRunEvents(run.id);
+      state = reconstructRunState(simpleTimetable, stored, events);
+      expect(state.phase).toBe('running');
+      expect(state.currentActivity?.id).toBe('wake');
+      expect(state.segments.filter((segment) => segment.occurrenceId === 'wake')).toHaveLength(2);
+  });
+
+  it('ends a paused task while its interruption remains current', async () => {
+      const run = await repository.createRun(ref, START);
+      await repository.pause({
+        runId: run.id,
+        occurredAt: new Date('2026-03-02T00:10:00.000Z'),
+        expectedItemId: 'wake',
+        expectedSeq: 1,
+      });
+      let stored = (await repository.getRun(run.id))!;
+      let events = await repository.getRunEvents(run.id);
+      let state = reconstructRunState(simpleTimetable, stored, events);
+
+      await repository.endPaused({
+        runId: run.id,
+        occurredAt: new Date('2026-03-02T00:15:00.000Z'),
+        expectedItemId: state.currentActivity!.id,
+        expectedResumeTargetId: state.resumeTarget!.id,
+        expectedSeq: state.lastSeq,
+      });
+      stored = (await repository.getRun(run.id))!;
+      events = await repository.getRunEvents(run.id);
+      state = reconstructRunState(simpleTimetable, stored, events);
+      expect(state.phase).toBe('running');
+      expect(state.currentActivity?.label).toBe('Between tasks');
+      expect(state.resumeTarget).toBeNull();
+      expect(state.nextItem?.id).toBe('gym');
+  });
+
   it('atomically separates a shared boundary into a gap', async () => {
     const run = await repository.createRun(ref, START);
     await advance('next', new Date('2026-03-02T00:30:00.000Z'));
@@ -331,25 +414,6 @@ describe.each(adapters)('$name satisfies the repository contract', ({ create }) 
     expect((await restored.getActiveRun())?.id).toBe(run.id);
   });
 
-  it('corrects both records in a transition atomically', async () => {
-    const run = await repository.createRun(ref, START);
-    await advance('next', new Date('2026-03-02T00:50:00.000Z'));
-    const events = await repository.getRunEvents(run.id);
-
-    await repository.correctTransitionTime({
-      runId: run.id,
-      transitionId: events[1]!.transitionId,
-      expectedOccurredAt: events[1]!.occurredAt,
-      correctedAt: new Date('2026-03-02T00:35:00.000Z'),
-      observedAt: new Date('2026-03-02T01:00:00.000Z'),
-      expectedSeq: events[events.length - 1]!.seq,
-    });
-
-    const corrected = await repository.getRunEvents(run.id);
-    expect(corrected[1]?.occurredAt.toISOString()).toBe('2026-03-02T00:35:00.000Z');
-    expect(corrected[2]?.occurredAt.toISOString()).toBe('2026-03-02T00:35:00.000Z');
-  });
-
   it('clears every stored record', async () => {
     await repository.createRun(ref, START);
     await repository.skipDay({
@@ -395,10 +459,10 @@ describe.each(adapters)('$name satisfies the repository contract', ({ create }) 
 });
 
 describe('IndexedDbRepository durability', () => {
-  it('clears the pre-production version 1 database during the schema upgrade', async () => {
+  it('clears the previous version 2 database during the fresh-model upgrade', async () => {
     const name = `quartz-reset-${Date.now()}`;
     await new Promise<void>((resolve, reject) => {
-      const open = globalThis.indexedDB.open(name, 1);
+      const open = globalThis.indexedDB.open(name, 2);
       open.onupgradeneeded = () => {
         const timetables = open.result.createObjectStore('timetables', {
           keyPath: ['id', 'version'],

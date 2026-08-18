@@ -97,6 +97,37 @@ describe('buildRunReport', () => {
       });
       expect(report.observations[0]?.actualDurationMs).toBe(30 * 60_000);
     });
+
+    it('sums resumed segments and keeps pause time separate', () => {
+      const driver = new RunDriver(simpleTimetable, START)
+        .pause(at('2026-03-02T00:10:00.000Z'))
+        .resume(at('2026-03-02T00:20:00.000Z'))
+        .next(at('2026-03-02T00:40:00.000Z'));
+      const report = buildRunReport(simpleTimetable, driver.run, driver.events);
+      const wake = observation(report, 'wake');
+
+      expect(wake.segmentCount).toBe(2);
+      expect(wake.actualDurationMs).toBe(minutes(30));
+      expect(wake.durationDeviationMs).toBe(0);
+      expect(report.insertedObservations).toHaveLength(1);
+      expect(report.totalInsertedDurationMs).toBe(minutes(10));
+      expect(report.totalBetweenTasksMs).toBe(0);
+    });
+
+    it('does not turn inserted time into lateness for the following planned task', () => {
+      const driver = new RunDriver(simpleTimetable, START)
+        .startUnplanned('Phone call', at('2026-03-02T00:10:00.000Z'))
+        .next(at('2026-03-02T00:20:00.000Z'));
+      const report = buildRunReport(simpleTimetable, driver.run, driver.events);
+
+      expect(report.insertedObservations[0]).toMatchObject({
+        actualDurationMs: minutes(10),
+        segmentCount: 1,
+      });
+      expect(report.insertedObservations[0]?.occurrence.label).toBe('Phone call');
+      expect(report.totalInsertedDurationMs).toBe(minutes(10));
+      expect(observation(report, 'gym').startDeviationMs).toBeNull();
+    });
   });
 
   it('measures actual duration and duration deviation', () => {

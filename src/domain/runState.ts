@@ -1,20 +1,24 @@
 /**
  * Pure reconstruction of a run from its event history.
  *
- * This reducer is the single source of truth for "what is happening now". It is
- * used by the active-run screen, by the storage adapters inside their write
- * transactions, by the report engine, and by backup validation. If a history
- * cannot produce a valid state the reducer throws instead of guessing.
+ * A planned occurrence may own several active segments. Inserted occurrences
+ * are defined by their first started event, which keeps creation and Undo in the
+ * same atomic transition.
  */
 
 import { QuartzError } from './errors';
-import type { Run, RunEvent, RunState, Timetable, TimetableItem } from './types';
+import type {
+  ActivitySegment,
+  Run,
+  RunEvent,
+  RunState,
+  Timetable,
+  TimetableItem,
+  TrackedOccurrence,
+} from './types';
 
 export const eventId = (runId: string, seq: number): string =>
   `${runId}#${String(seq).padStart(8, '0')}`;
-
-const isTerminal = (event: RunEvent): boolean =>
-  event.type === 'completed' || event.type === 'skipped';
 
 export const sortEvents = (events: readonly RunEvent[]): RunEvent[] =>
   [...events].sort((a, b) => a.seq - b.seq);
@@ -23,13 +27,6 @@ function corrupt(message: string, details: readonly string[] = []): never {
   throw new QuartzError('corrupt-history', message, details);
 }
 
-/**
- * Determine which transitions have been reversed by an undo.
- *
- * A transition's ID is the ID of its first event, and an undo always targets
- * that first (terminal) event, so `reversesEventId` is also the reversed
- * transition ID.
- */
 const collectReversedTransitions = (sorted: readonly RunEvent[]): Set<string> => {
   const byId = new Map(sorted.map((event) => [event.id, event]));
   const reversed = new Set<string>();
@@ -42,20 +39,14 @@ const collectReversedTransitions = (sorted: readonly RunEvent[]): Set<string> =>
       continue;
     }
     if (event.reversesEventId === null) {
-      corrupt(`Undo event ${event.id} does not reference the event it reverses`);
+      corrupt(`Undo event ${event.id} does not reference the transition it reverses`);
     }
     const target = byId.get(event.reversesEventId);
     if (!target) {
       corrupt(`Undo event ${event.id} references unknown event ${event.reversesEventId}`);
-      return reversed;
     }
-    const standaloneStart =
-      target.type === 'started' && target.seq > 1 && target.id === target.transitionId;
-    if (!isTerminal(target) && !standaloneStart) {
+    if (target.type === 'undo' || target.id !== target.transitionId || target.seq === 1) {
       corrupt(`Undo event ${event.id} must reverse a transition that can be undone`);
-    }
-    if (target.id !== target.transitionId) {
-      corrupt(`Undo event ${event.id} must reverse the first event of a transition`);
     }
     if (reversed.has(target.transitionId)) {
       corrupt(`Transition ${target.transitionId} has already been reversed`);
@@ -107,6 +98,15 @@ export const resolveExecutionOrder = (
   });
 };
 
+const plannedOccurrence = (item: TimetableItem): TrackedOccurrence => ({
+  id: item.id,
+  label: item.label,
+  kind: 'planned',
+  plannedItemId: item.id,
+  insertedOrigin: null,
+  resumeTargetId: null,
+});
+
 /** Rebuild the current state of a run, or throw `corrupt-history`. */
 export const reconstructRunState = (
   timetable: Timetable,
@@ -123,19 +123,25 @@ export const reconstructRunState = (
   const sorted = sortEvents(events);
   assertWellFormed(run, sorted);
   const orderedItems = resolveExecutionOrder(timetable, run);
-
   const reversed = collectReversedTransitions(sorted);
   const effectiveEvents = sorted.filter(
     (event) => event.type !== 'undo' && !reversed.has(event.transitionId),
   );
-
   if (effectiveEvents.length === 0) {
     corrupt(`Run ${run.id} has no effective events; a run always starts its first item`);
   }
 
-  let index = 0;
-  let expecting: 'start' | 'terminal' = 'start';
-  let currentItemStartedAt: Date | null = null;
+  const occurrences = orderedItems.map(plannedOccurrence);
+  const occurrenceById = new Map(occurrences.map((occurrence) => [occurrence.id, occurrence]));
+  const segments: ActivitySegment[] = [];
+  const completed = new Set<string>();
+  const skipped = new Set<string>();
+  const paused = new Set<string>();
+
+  let plannedCursor = 0;
+  let currentActivity: TrackedOccurrence | null = null;
+  let openSegmentIndex: number | null = null;
+  let resumeTargetId: string | null = null;
   let previousAt = -Infinity;
 
   for (const event of effectiveEvents) {
@@ -144,71 +150,201 @@ export const reconstructRunState = (
     }
     previousAt = event.occurredAt.getTime();
 
-    const item = orderedItems[index];
-    if (!item) {
-      corrupt(`Event ${event.id} refers to a position beyond the end of the timetable`);
-      break;
-    }
-    if (event.itemId !== item.id) {
-      corrupt(
-        `Event ${event.id} refers to item "${event.itemId}" but the timetable expects "${item.id}"`,
-      );
+    if (event.type === 'started') {
+      if (currentActivity !== null || openSegmentIndex !== null) {
+        corrupt(`Event ${event.id} starts an activity while another segment is running`);
+      }
+
+      const inserted = event.inserted ?? null;
+      let occurrence = occurrenceById.get(event.itemId);
+      if (inserted) {
+        if (occurrence || inserted.label.trim().length === 0) {
+          corrupt(`Event ${event.id} has an invalid inserted occurrence definition`);
+        }
+        if (
+          (inserted.origin === 'pause' && inserted.resumeTargetId === null) ||
+          (inserted.origin === 'unplanned' && inserted.resumeTargetId !== null)
+        ) {
+          corrupt(`Event ${event.id} has inconsistent inserted occurrence metadata`);
+        }
+        if (inserted.resumeTargetId !== null) {
+          const target = occurrenceById.get(inserted.resumeTargetId);
+          if (!target || target.kind !== 'planned' || !paused.has(target.id)) {
+            corrupt(`Event ${event.id} references an activity that is not paused`);
+          }
+          if (resumeTargetId !== null) {
+            corrupt(`Event ${event.id} creates a second resume target`);
+          }
+          resumeTargetId = target.id;
+        }
+        occurrence = {
+          id: event.itemId,
+          label: inserted.label.trim(),
+          kind: 'inserted',
+          plannedItemId: null,
+          insertedOrigin: inserted.origin,
+          resumeTargetId: inserted.resumeTargetId,
+        };
+        occurrences.push(occurrence);
+        occurrenceById.set(occurrence.id, occurrence);
+      } else {
+        if (!occurrence) {
+          corrupt(`Event ${event.id} starts unknown occurrence "${event.itemId}"`);
+        }
+        if (occurrence.kind === 'inserted') {
+          corrupt(`Inserted occurrence "${occurrence.id}" cannot be started more than once`);
+        }
+        if (completed.has(occurrence.id) || skipped.has(occurrence.id)) {
+          corrupt(`Event ${event.id} restarts a finished occurrence`);
+        }
+        if (resumeTargetId !== null) {
+          if (event.itemId !== resumeTargetId || !paused.has(event.itemId)) {
+            corrupt(`Event ${event.id} does not resume the expected paused occurrence`);
+          }
+          paused.delete(event.itemId);
+          resumeTargetId = null;
+        } else {
+          const expected = orderedItems[plannedCursor];
+          if (!expected || expected.id !== event.itemId || paused.has(event.itemId)) {
+            corrupt(
+              `Event ${event.id} starts "${event.itemId}" but the planned order expects ` +
+                `"${expected?.id ?? 'the end of the day'}"`,
+            );
+          }
+        }
+      }
+
+      currentActivity = occurrence;
+      segments.push({
+        id: event.id,
+        occurrenceId: occurrence.id,
+        startedAt: event.occurredAt,
+        endedAt: null,
+        startEventId: event.id,
+        endEventId: null,
+        endType: null,
+      });
+      openSegmentIndex = segments.length - 1;
+      continue;
     }
 
-    if (expecting === 'start') {
-      if (event.type !== 'started') {
-        corrupt(`Expected a started event for "${item.id}" but found "${event.type}"`);
+    if (event.type === 'ended') {
+      if (
+        currentActivity?.kind !== 'inserted' ||
+        resumeTargetId !== event.itemId ||
+        !paused.has(event.itemId)
+      ) {
+        corrupt(`Event ${event.id} does not end the current paused occurrence`);
       }
-      currentItemStartedAt = event.occurredAt;
-      expecting = 'terminal';
-    } else {
-      if (!isTerminal(event)) {
-        corrupt(`Expected a completed or skipped event for "${item.id}" but found "${event.type}"`);
+      const expected = orderedItems[plannedCursor];
+      if (!expected || expected.id !== event.itemId) {
+        corrupt(`Event ${event.id} ends a paused occurrence out of planned order`);
       }
-      currentItemStartedAt = null;
-      index += 1;
-      expecting = 'start';
+      paused.delete(event.itemId);
+      completed.add(event.itemId);
+      resumeTargetId = null;
+      plannedCursor += 1;
+      continue;
     }
+
+    if (
+      event.type !== 'completed' &&
+      event.type !== 'skipped' &&
+      event.type !== 'paused'
+    ) {
+      corrupt(`Event ${event.id} has unsupported type "${event.type}"`);
+    }
+    if (
+      currentActivity === null ||
+      currentActivity.id !== event.itemId ||
+      openSegmentIndex === null
+    ) {
+      if (currentActivity !== null && currentActivity.id !== event.itemId) {
+        corrupt(
+          `Event ${event.id} refers to item "${event.itemId}" but the timetable expects ` +
+            `"${currentActivity.id}"`,
+        );
+      }
+      corrupt(`Event ${event.id} does not close the running occurrence`);
+    }
+
+    const segment = segments[openSegmentIndex];
+    if (!segment) corrupt(`Event ${event.id} cannot find its running segment`);
+    segments[openSegmentIndex] = {
+      ...segment,
+      endedAt: event.occurredAt,
+      endEventId: event.id,
+      endType: event.type,
+    };
+
+    if (event.type === 'paused') {
+      if (currentActivity.kind !== 'planned' || resumeTargetId !== null) {
+        corrupt(`Event ${event.id} can pause only one planned occurrence`);
+      }
+      paused.add(currentActivity.id);
+    } else if (event.type === 'skipped') {
+      if (currentActivity.kind !== 'planned') {
+        corrupt(`Event ${event.id} cannot skip an inserted occurrence`);
+      }
+      const expected = orderedItems[plannedCursor];
+      if (!expected || expected.id !== currentActivity.id) {
+        corrupt(`Event ${event.id} skips a planned occurrence out of order`);
+      }
+      skipped.add(currentActivity.id);
+      plannedCursor += 1;
+    } else {
+      completed.add(currentActivity.id);
+      if (currentActivity.kind === 'planned') {
+        const expected = orderedItems[plannedCursor];
+        if (!expected || expected.id !== currentActivity.id) {
+          corrupt(`Event ${event.id} completes a planned occurrence out of order`);
+        }
+        plannedCursor += 1;
+      }
+    }
+
+    currentActivity = null;
+    openSegmentIndex = null;
   }
 
   let status: Run['status'];
   let phase: RunState['phase'];
-  let currentIndex: number | null;
-  let nextIndex: number | null;
-
-  if (expecting === 'terminal') {
-    status = 'active';
-    phase = 'running';
-    currentIndex = index;
-    nextIndex = index + 1 < orderedItems.length ? index + 1 : null;
-  } else if (index === orderedItems.length) {
+  if (currentActivity !== null) {
+    if (resumeTargetId !== null) {
+      if (
+        currentActivity.kind !== 'inserted' ||
+        currentActivity.insertedOrigin !== 'pause' ||
+        currentActivity.resumeTargetId !== resumeTargetId
+      ) {
+        corrupt(`Run ${run.id} has an invalid paused state`);
+      }
+      status = 'active';
+      phase = 'paused';
+    } else {
+      status = 'active';
+      phase = 'running';
+    }
+  } else if (plannedCursor === orderedItems.length) {
+    if (paused.size > 0 || resumeTargetId !== null) {
+      corrupt(`Run ${run.id} completes with a paused occurrence`);
+    }
     status = 'completed';
     phase = 'completed';
-    currentIndex = null;
-    nextIndex = null;
   } else {
+    if (paused.size > 0 || resumeTargetId !== null) {
+      corrupt(`Run ${run.id} stops between events while an occurrence is paused`);
+    }
     status = 'active';
     phase = 'between';
-    currentIndex = null;
-    nextIndex = index;
   }
 
   if (run.status === 'skipped') {
-    if (status !== 'active' && status !== 'completed') {
-      corrupt(`Skipped run ${run.id} must contain a valid run history`);
-    }
-    if (run.completedAt === null) {
-      corrupt(`Skipped run ${run.id} has no skip timestamp`);
-    }
+    if (run.completedAt === null) corrupt(`Skipped run ${run.id} has no skip timestamp`);
     status = 'skipped';
     phase = 'completed';
-    currentIndex = null;
-    nextIndex = null;
-    currentItemStartedAt = null;
+    currentActivity = null;
   } else if (status !== run.status) {
-    corrupt(
-      `Run ${run.id} is stored as "${run.status}" but its events describe "${status}"`,
-    );
+    corrupt(`Run ${run.id} is stored as "${run.status}" but its events describe "${status}"`);
   }
   if (status === 'completed' && run.completedAt === null) {
     corrupt(`Run ${run.id} is completed but has no completion timestamp`);
@@ -217,39 +353,52 @@ export const reconstructRunState = (
     corrupt(`Run ${run.id} is active but has a completion timestamp`);
   }
 
-  const currentItem = currentIndex === null ? null : (orderedItems[currentIndex] ?? null);
+  const currentItem =
+    currentActivity?.plannedItemId === null || currentActivity === null
+      ? null
+      : (orderedItems.find((item) => item.id === currentActivity.plannedItemId) ?? null);
+  const currentIndex = currentItem
+    ? orderedItems.findIndex((item) => item.id === currentItem.id)
+    : null;
+  const resumeTarget =
+    resumeTargetId === null ? null : (occurrenceById.get(resumeTargetId) ?? null);
+  const nextPlannedIndex =
+    currentItem !== null || resumeTarget !== null ? plannedCursor + 1 : plannedCursor;
+  const nextIndex = nextPlannedIndex < orderedItems.length ? nextPlannedIndex : null;
   const nextItem = nextIndex === null ? null : (orderedItems[nextIndex] ?? null);
+  const openSegment = openSegmentIndex === null ? null : (segments[openSegmentIndex] ?? null);
   const lastEvent = sorted[sorted.length - 1];
-
-  return {
+  const state: RunState = {
     run,
     timetable,
     events: sorted,
     effectiveEvents,
     status,
     phase,
+    occurrences,
+    segments,
+    currentActivity,
+    currentActivityStartedAt: openSegment?.startedAt ?? null,
+    resumeTarget,
+    completedOccurrenceIds: [...completed],
+    skippedOccurrenceIds: [...skipped],
     orderedItems,
     currentIndex,
     currentItem,
-    currentItemStartedAt,
+    currentItemStartedAt: currentItem ? (openSegment?.startedAt ?? null) : null,
     nextIndex,
     nextItem,
-    canUndo: status !== 'skipped' && effectiveEvents.some(isTerminal),
-    lastSeq: lastEvent ? lastEvent.seq : 0,
+    canUndo: false,
+    lastSeq: lastEvent?.seq ?? 0,
   };
+  return { ...state, canUndo: findUndoTarget(state) !== null };
 };
 
-/** The most recent transition that can be undone. */
+/** The first event of the most recent effective transition that can be undone. */
 export const findUndoTarget = (state: RunState): RunEvent | null => {
-  for (let i = state.effectiveEvents.length - 1; i >= 0; i -= 1) {
-    const event = state.effectiveEvents[i];
-    if (
-      event &&
-      (isTerminal(event) ||
-        (event.type === 'started' && event.seq > 1 && event.id === event.transitionId))
-    ) {
-      return event;
-    }
+  for (let index = state.effectiveEvents.length - 1; index >= 0; index -= 1) {
+    const event = state.effectiveEvents[index];
+    if (event && event.seq > 1 && event.id === event.transitionId) return event;
   }
   return null;
 };

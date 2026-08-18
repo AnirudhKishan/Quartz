@@ -47,13 +47,12 @@ export interface AppStore {
   startRun(ref: TimetableRef): Promise<void>;
   advance(kind: TransitionKind): Promise<void>;
   startNext(): Promise<void>;
+  startUnplanned(label: string): Promise<void>;
+  pause(): Promise<void>;
+  resume(): Promise<void>;
+  endPaused(): Promise<void>;
   reorderUpcoming(itemId: string): Promise<void>;
   undo(): Promise<void>;
-  correctTransitionTime(
-    transitionId: string,
-    expectedOccurredAt: Date,
-    correctedAt: Date,
-  ): Promise<boolean>;
   editTimeline(replacements: EditTimelineCommand['replacements']): Promise<boolean>;
   skipDay(): Promise<boolean>;
   clearAllData(): Promise<boolean>;
@@ -184,6 +183,26 @@ export const AppProvider = ({ services, bundledTimetables, children }: AppProvid
           if (!activeState) return null;
           return services.runs.startNext(activeState);
         }),
+      startUnplanned: (label) =>
+        guard(async () => {
+          if (!activeState) return null;
+          return services.runs.startUnplanned(activeState, label);
+        }),
+      pause: () =>
+        guard(async () => {
+          if (!activeState) return null;
+          return services.runs.pause(activeState);
+        }),
+      resume: () =>
+        guard(async () => {
+          if (!activeState) return null;
+          return services.runs.resume(activeState);
+        }),
+      endPaused: () =>
+        guard(async () => {
+          if (!activeState) return null;
+          return services.runs.endPaused(activeState);
+        }),
       reorderUpcoming: (itemId) =>
         guard(async () => {
           if (!activeState) return null;
@@ -194,35 +213,6 @@ export const AppProvider = ({ services, bundledTimetables, children }: AppProvid
           if (!activeState) return null;
           return services.runs.undo(activeState);
         }),
-      correctTransitionTime: async (transitionId, expectedOccurredAt, correctedAt) => {
-        if (inFlight.current || !activeState) return false;
-        inFlight.current = true;
-        setBusy(true);
-        try {
-          setActiveState(
-            await services.runs.correctTransitionTime(
-              activeState.run.id,
-              transitionId,
-              expectedOccurredAt,
-              correctedAt,
-            ),
-          );
-          setNotice(null);
-          return true;
-        } catch (error) {
-          const quartz = toQuartzError(error);
-          if (isBlockingError(quartz)) {
-            setBlockingError(quartz);
-            setPhase('blocked');
-          } else {
-            setNotice(quartz.message);
-          }
-          return false;
-        } finally {
-          inFlight.current = false;
-          setBusy(false);
-        }
-      },
       editTimeline: async (replacements) => {
         if (inFlight.current || !activeState) return false;
         inFlight.current = true;
