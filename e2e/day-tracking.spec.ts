@@ -57,6 +57,21 @@ test('@timeline-geometry planned tasks stay on clock time while only the marker 
     0.1,
   );
   await expect(page.locator('.timeline-now')).toHaveCount(1);
+  const timeline = page.locator('.day-timeline');
+  await expect
+    .poll(() =>
+      timeline.evaluate((element) => ({
+        clientHeight: element.clientHeight,
+        scrollHeight: element.scrollHeight,
+      })),
+    )
+    .toMatchObject({ clientHeight: expect.any(Number), scrollHeight: expect.any(Number) });
+  expect(
+    await timeline.evaluate((element) => element.scrollHeight > element.clientHeight),
+  ).toBeTruthy();
+  await timeline.evaluate((element) => element.scrollTo({ top: element.scrollHeight }));
+  await expect.poll(() => timeline.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+  await expect(taskCard(page, '😴 Sleep')).toBeVisible();
   await capture(page, testInfo, 'absolute-clock-timeline');
 });
 

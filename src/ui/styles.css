@@ -95,6 +95,13 @@ body {
   padding-top: 1.5rem;
 }
 
+.screen--active-run {
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
+  padding-bottom: 0;
+}
+
 .section-title {
   margin: 1.75rem 0 0.75rem;
   font-size: 0.85rem;
@@ -263,6 +270,7 @@ body {
 
 .active-run {
   display: flex;
+  flex: 1;
   min-height: 0;
   flex-direction: column;
 }

@@ -9,6 +9,7 @@ export interface ScreenProps {
   readonly children: ReactNode;
   readonly footer?: ReactNode;
   readonly hideHeader?: boolean;
+  readonly className?: string;
   readonly bodyClassName?: string;
 }
 
@@ -19,9 +20,10 @@ export const Screen = ({
   children,
   footer,
   hideHeader = false,
+  className,
   bodyClassName,
 }: ScreenProps) => (
-  <div className="screen">
+  <div className={`screen${className ? ` ${className}` : ''}`}>
     {hideHeader ? (
       <h1 className="sr-only">{title}</h1>
     ) : (

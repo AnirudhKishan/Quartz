@@ -106,6 +106,7 @@ export const ActiveRunScreen = () => {
     <Screen
       title={completed ? 'Day complete' : timetable.name}
       hideHeader
+      className="screen--active-run"
       bodyClassName="active-run"
     >
       {!completed && (
