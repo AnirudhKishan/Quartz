@@ -23,7 +23,12 @@ import {
   formatTimeInZone,
 } from '../format';
 import {
+  locateTimelineClock,
+  locateTimelineClockCard,
   moveTimelineBoundary,
+  timelineDragTime,
+  timelineEditDurationHeight,
+  timelineEditSectionHeight,
   timelineSectionHeight,
   type TimelineDraftSegment,
 } from '../timeline';
@@ -52,6 +57,8 @@ interface BoundaryHandleProps {
   readonly value: number;
   readonly label: string;
   readonly magnetic: boolean;
+  readonly getScrollPosition: () => number;
+  readonly autoScroll: (clientY: number) => void;
   readonly onMove: (rawValue: number) => void;
 }
 
@@ -60,9 +67,16 @@ const BoundaryHandle = ({
   value,
   label,
   magnetic,
+  getScrollPosition,
+  autoScroll,
   onMove,
 }: BoundaryHandleProps) => {
-  const drag = useRef<{ pointerId: number; y: number; value: number } | null>(null);
+  const drag = useRef<{
+    pointerId: number;
+    y: number;
+    value: number;
+    scrollPosition: number;
+  } | null>(null);
   return (
     <button
       type="button"
@@ -73,14 +87,24 @@ const BoundaryHandle = ({
         event.preventDefault();
         event.stopPropagation();
         event.currentTarget.setPointerCapture(event.pointerId);
-        drag.current = { pointerId: event.pointerId, y: event.clientY, value };
+        drag.current = {
+          pointerId: event.pointerId,
+          y: event.clientY,
+          value,
+          scrollPosition: getScrollPosition(),
+        };
       }}
       onPointerMove={(event) => {
         const active = drag.current;
         if (!active || active.pointerId !== event.pointerId) return;
-        if (event.clientY < 80) window.scrollBy(0, -12);
-        if (event.clientY > window.innerHeight - 80) window.scrollBy(0, 12);
-        onMove(active.value + (event.clientY - active.y) * 60_000);
+        autoScroll(event.clientY);
+        onMove(
+          timelineDragTime(
+            active.value,
+            event.clientY - active.y,
+            getScrollPosition() - active.scrollPosition,
+          ),
+        );
       }}
       onPointerUp={(event) => {
         if (drag.current?.pointerId === event.pointerId) drag.current = null;
@@ -119,7 +143,7 @@ export const DayTimeline = ({
   constrainHeight = true,
 }: DayTimelineProps) => {
   const containerRef = useRef<HTMLDivElement>(null);
-  const currentRef = useRef<HTMLLIElement>(null);
+  const clockRef = useRef<HTMLDivElement>(null);
   const cardRefs = useRef(new Map<string, HTMLElement>());
   const longPress = useRef<{
     timer: number;
@@ -135,9 +159,37 @@ export const DayTimeline = ({
   const [activeEdge, setActiveEdge] = useState<string | null>(null);
   const [magneticEdge, setMagneticEdge] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [clockCards, setClockCards] = useState<
+    readonly { itemId: string; key: string; height: number }[]
+  >([]);
   const report = useMemo(
     () => buildRunReport(state.timetable, state.run, state.events),
     [state],
+  );
+  const clockPosition = useMemo(
+    () =>
+      state.status === 'active'
+        ? locateTimelineClock(
+            report.observations.map((observation) => ({
+              id: observation.item.id,
+              durationMs: observation.plannedDurationMs,
+            })),
+            now.getTime() - state.run.startedAt.getTime(),
+          )
+        : null,
+    [now, report.observations, state.run.startedAt, state.status],
+  );
+  const renderedClockPosition = useMemo(
+    () =>
+      clockPosition
+        ? locateTimelineClockCard(
+            clockCards
+              .filter((card) => card.itemId === clockPosition.id)
+              .map((card) => ({ key: card.key, height: card.height })),
+            clockPosition.fraction,
+          )
+        : null,
+    [clockCards, clockPosition],
   );
   const eventById = useMemo(
     () => new Map(state.effectiveEvents.map((event) => [event.id, event])),
@@ -227,9 +279,68 @@ export const DayTimeline = ({
   );
 
   useLayoutEffect(() => {
-    if (!autoFocusCurrent || !currentRef.current || editingSegmentId) return;
-    currentRef.current.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
-  }, [autoFocusCurrent, editingSegmentId, state.currentActivity?.id]);
+    if (!autoFocusCurrent || !clockRef.current || editingSegmentId) return;
+    clockRef.current.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
+  }, [autoFocusCurrent, editingSegmentId, renderedClockPosition?.key]);
+
+  useLayoutEffect(() => {
+    if (!editingSegmentId) return;
+    cardRefs.current.get(editingSegmentId)?.scrollIntoView?.({ block: 'start' });
+  }, [editingSegmentId]);
+
+  useLayoutEffect(() => {
+    const container = containerRef.current;
+    if (!container || editingSegmentId) return undefined;
+    const elements = [
+      ...container.querySelectorAll<HTMLElement>(
+        '[data-planned-item-id][data-clock-card-key]',
+      ),
+    ];
+    const measure = () => {
+      const next = elements.map((element) => ({
+        itemId: element.dataset.plannedItemId ?? '',
+        key: element.dataset.clockCardKey ?? '',
+        height: element.getBoundingClientRect().height,
+      }));
+      setClockCards((current) =>
+        current.length === next.length &&
+        current.every(
+          (card, index) =>
+            card.itemId === next[index]?.itemId &&
+            card.key === next[index]?.key &&
+            card.height === next[index]?.height,
+        )
+          ? current
+          : next,
+      );
+    };
+    measure();
+    if (typeof ResizeObserver === 'undefined') return undefined;
+    const observer = new ResizeObserver(measure);
+    elements.forEach((element) => observer.observe(element));
+    return () => observer.disconnect();
+  }, [editingSegmentId, report.observations, state.segments]);
+
+  const scrollContainer = useCallback(() => {
+    const container = containerRef.current;
+    return container && container.scrollHeight > container.clientHeight + 1 ? container : null;
+  }, []);
+
+  const getScrollPosition = useCallback(
+    () => scrollContainer()?.scrollTop ?? window.scrollY,
+    [scrollContainer],
+  );
+
+  const autoScroll = useCallback(
+    (clientY: number) => {
+      const container = scrollContainer();
+      const top = container?.getBoundingClientRect().top ?? 0;
+      const bottom = container?.getBoundingClientRect().bottom ?? window.innerHeight;
+      if (clientY < top + 80) (container ?? window).scrollBy(0, -12);
+      if (clientY > bottom - 80) (container ?? window).scrollBy(0, 12);
+    },
+    [scrollContainer],
+  );
 
   const select = (activityId: string, target: HTMLElement) => {
     onSelectActivity?.(activityId, target.getBoundingClientRect().top, target);
@@ -341,15 +452,23 @@ export const DayTimeline = ({
       draftSegment.end === null
         ? Math.max(0, now.getTime() - draftSegment.start)
         : Math.max(0, draftSegment.end - draftSegment.start);
-    const sectionHeight = timelineSectionHeight(
-      plan ? plan.plannedDurationMs / Math.max(1, occurrenceSegments.length) : 15 * 60_000,
-    );
+    const sectionHeight = editingSegmentId
+      ? timelineEditSectionHeight(duration)
+      : timelineSectionHeight(
+          plan ? plan.plannedDurationMs / Math.max(1, occurrenceSegments.length) : 15 * 60_000,
+        );
+    const ownsClock =
+      !editingSegmentId && renderedClockPosition?.key === segment.id;
+    const isPrimaryPlannedCard = plan !== undefined && occurrenceSegmentIndex === 1;
 
     return (
       <li
         className={`timeline-item timeline-item--${itemState}${selectedActivityId === occurrence.id ? ' timeline-item--selected' : ''}${isEditing ? ' timeline-item--editing' : ''}`}
-        ref={current ? currentRef : undefined}
-        style={{ minHeight: `${sectionHeight}px` }}
+        style={
+          editingSegmentId
+            ? { height: `${sectionHeight}px` }
+            : { minHeight: `${sectionHeight}px` }
+        }
         key={segment.id}
       >
         {(showTopBoundary || showSharedTop) && (
@@ -364,6 +483,8 @@ export const DayTimeline = ({
         </span>
         <article
           className="timeline-item__card"
+          data-planned-item-id={isPrimaryPlannedCard ? plan.item.id : undefined}
+          data-clock-card-key={isPrimaryPlannedCard ? segment.id : undefined}
           tabIndex={0}
           aria-describedby={`timeline-help-${segment.id}`}
           ref={(node) => {
@@ -440,102 +561,106 @@ export const DayTimeline = ({
               value={draftSegment.start}
               label={`Adjust ${occurrence.label} segment start`}
               magnetic={magneticEdge === `${segment.id}:start`}
+              getScrollPosition={getScrollPosition}
+              autoScroll={autoScroll}
               onMove={(value) => moveBoundary(segmentIndex, 'start', value)}
             />
           )}
-          <div className="timeline-item__heading">
-            <h2>{occurrence.label}</h2>
-            <div className="timeline-item__heading-actions">
-              <span className="timeline-item__state">{itemState}</span>
-              {!editingSegmentId && onSelectActivity && (
-                <button
-                  type="button"
-                  className="timeline-item__details"
-                  aria-label={`Open ${occurrence.label} details`}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    select(occurrence.id, event.currentTarget.closest('article')!);
-                  }}
-                >
-                  ›
-                </button>
-              )}
-            </div>
-          </div>
-          {plan && (
-            <p className="timeline-item__planned">
-              Planned {plan.item.plannedStart}–{plan.item.plannedEnd}
-            </p>
-          )}
-          {occurrence.kind === 'inserted' && (
-            <p className="timeline-item__planned">Unplanned activity</p>
-          )}
-          {occurrenceSegments.length > 1 && (
-            <p className="timeline-item__segment-count">
-              Segment {occurrenceSegmentIndex} of {occurrenceSegments.length}
-            </p>
-          )}
-          {!editingSegmentId && (
-            <p className="timeline-item__actual">
-              Actual {formatTimeInZone(segment.startedAt, state.timetable.timezone)}
-              {segment.endedAt
-                ? `–${formatTimeInZone(segment.endedAt, state.timetable.timezone)}`
-                : ''}
-              {segment.endedAt ? ` · ${formatStopwatch(duration)}` : ''}
-              {plan &&
-                occurrenceSegmentIndex === 1 &&
-                plan.startDeviationMs !== null && (
-                  <>
-                    {' · '}
-                    <span className={`tone--${deviationTone(plan.startDeviationMs)}`}>
-                      {formatDeviation(plan.startDeviationMs)}
-                    </span>
-                  </>
+          <div className="timeline-item__card-content">
+            <div className="timeline-item__heading">
+              <h2>{occurrence.label}</h2>
+              <div className="timeline-item__heading-actions">
+                <span className="timeline-item__state">{itemState}</span>
+                {!editingSegmentId && onSelectActivity && (
+                  <button
+                    type="button"
+                    className="timeline-item__details"
+                    aria-label={`Open ${occurrence.label} details`}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      select(occurrence.id, event.currentTarget.closest('article')!);
+                    }}
+                  >
+                    ›
+                  </button>
                 )}
-            </p>
-          )}
-          {plan &&
-            occurrenceSegmentIndex === occurrenceSegments.length &&
-            plan.durationDeviationMs !== null &&
-            !editingSegmentId && (
-              <p
-                className={`timeline-item__actual tone--${deviationTone(plan.durationDeviationMs)}`}
-              >
-                  Duration {formatDeviation(plan.durationDeviationMs, 'longer')}
-                  {plan.segmentCount > 1 ? ` · ${plan.segmentCount} segments` : ''}
+              </div>
+            </div>
+            {plan && (
+              <p className="timeline-item__planned">
+                Planned {plan.item.plannedStart}–{plan.item.plannedEnd}
               </p>
             )}
-          {current && !editingSegmentId && (
-            <p className="timeline-item__elapsed" aria-label="Time in this step">
-              {formatStopwatch(elapsedMs)}
-            </p>
-          )}
-          {isEditing && (
-            <p className="timeline-item__elapsed">{formatStopwatch(duration)}</p>
-          )}
+            {occurrence.kind === 'inserted' && (
+              <p className="timeline-item__planned">Unplanned activity</p>
+            )}
+            {occurrenceSegments.length > 1 && (
+              <p className="timeline-item__segment-count">
+                Segment {occurrenceSegmentIndex} of {occurrenceSegments.length}
+              </p>
+            )}
+            {!editingSegmentId && (
+              <p className="timeline-item__actual">
+                Actual {formatTimeInZone(segment.startedAt, state.timetable.timezone)}
+                {segment.endedAt
+                  ? `–${formatTimeInZone(segment.endedAt, state.timetable.timezone)}`
+                  : ''}
+                {segment.endedAt ? ` · ${formatStopwatch(duration)}` : ''}
+                {plan &&
+                  occurrenceSegmentIndex === 1 &&
+                  plan.startDeviationMs !== null && (
+                    <>
+                      {' · '}
+                      <span className={`tone--${deviationTone(plan.startDeviationMs)}`}>
+                        {formatDeviation(plan.startDeviationMs)}
+                      </span>
+                    </>
+                  )}
+              </p>
+            )}
+            {plan &&
+              occurrenceSegmentIndex === occurrenceSegments.length &&
+              plan.durationDeviationMs !== null &&
+              !editingSegmentId && (
+                <p
+                  className={`timeline-item__actual tone--${deviationTone(plan.durationDeviationMs)}`}
+                >
+                  Duration {formatDeviation(plan.durationDeviationMs, 'longer')}
+                  {plan.segmentCount > 1 ? ` · ${plan.segmentCount} segments` : ''}
+                </p>
+              )}
+            {current && !editingSegmentId && (
+              <p className="timeline-item__elapsed" aria-label="Time in this step">
+                {formatStopwatch(elapsedMs)}
+              </p>
+            )}
+            {isEditing && (
+              <p className="timeline-item__elapsed">{formatStopwatch(duration)}</p>
+            )}
+          </div>
           {isEditing && segment.endEventId && draftSegment.end !== null && (
             <BoundaryHandle
               edge="end"
               value={draftSegment.end}
               label={`Adjust ${occurrence.label} segment end`}
               magnetic={magneticEdge === `${segment.id}:end`}
+              getScrollPosition={getScrollPosition}
+              autoScroll={autoScroll}
               onMove={(value) => moveBoundary(segmentIndex, 'end', value)}
             />
           )}
+          {ownsClock && renderedClockPosition && (
+            <div
+              ref={clockRef}
+              className="timeline-now"
+              aria-label="Current time"
+              data-clock-fraction={renderedClockPosition.fraction}
+              style={{ top: `${renderedClockPosition.fraction * 100}%` }}
+            >
+              <time>{formatTimeInZone(now, state.timetable.timezone)}</time>
+            </div>
+          )}
         </article>
-        {current && !editingSegmentId && (
-          <div
-            className="timeline-now"
-            style={{
-              top: `${Math.min(
-                sectionHeight - 2,
-                Math.max(2, (elapsedMs / Math.max(plan?.plannedDurationMs ?? elapsedMs, 1)) * sectionHeight),
-              )}px`,
-            }}
-          >
-            <time>{formatTimeInZone(now, state.timetable.timezone)}</time>
-          </div>
-        )}
         {showBottomBoundary && draftSegment.end !== null && (
           <div
             className={`timeline-boundary timeline-boundary--bottom${bottomBoundaryActive ? ' timeline-boundary--active' : ''}`}
@@ -573,7 +698,18 @@ export const DayTimeline = ({
               <Fragment key={segment.id}>
                 {renderCard(segment, index, occurrence)}
                 {gap && (
-                  <li className="timeline-gap">
+                  <li
+                    className="timeline-gap"
+                    style={
+                      editingSegmentId
+                        ? {
+                            height: `${timelineEditDurationHeight(
+                              gap.end - gap.start,
+                            )}px`,
+                          }
+                        : undefined
+                    }
+                  >
                     <span>Between tasks</span>
                     <strong>{formatStopwatch(gap.end - gap.start)}</strong>
                     {!editingSegmentId && (
@@ -598,6 +734,8 @@ export const DayTimeline = ({
               </span>
               <article
                 className="timeline-item__card"
+                data-planned-item-id={observation.item.id}
+                data-clock-card-key={`upcoming:${observation.item.id}`}
                 tabIndex={0}
                 onClick={(event) => select(observation.item.id, event.currentTarget)}
               >
@@ -625,6 +763,18 @@ export const DayTimeline = ({
                 </p>
                 {observation.reordered && (
                   <p className="timeline-item__reordered">Order changed for today</p>
+                )}
+                {!editingSegmentId &&
+                  renderedClockPosition?.key === `upcoming:${observation.item.id}` && (
+                  <div
+                    ref={clockRef}
+                    className="timeline-now"
+                    aria-label="Current time"
+                    data-clock-fraction={renderedClockPosition.fraction}
+                    style={{ top: `${renderedClockPosition.fraction * 100}%` }}
+                  >
+                    <time>{formatTimeInZone(now, state.timetable.timezone)}</time>
+                  </div>
                 )}
               </article>
             </li>

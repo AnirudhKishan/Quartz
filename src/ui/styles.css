@@ -355,7 +355,10 @@ body {
 
 .timeline-item {
   position: relative;
+  display: flex;
+  align-items: stretch;
   padding-left: 3.35rem;
+  padding-bottom: 0.55rem;
 }
 
 .timeline-item__rail {
@@ -381,7 +384,8 @@ body {
 
 .timeline-item__card {
   position: relative;
-  min-height: calc(100% - 0.55rem);
+  flex: 1;
+  min-width: 0;
   padding: 0.75rem 0.85rem;
   border: 1px solid var(--border);
   border-radius: 0.85rem;
@@ -558,6 +562,7 @@ body {
 
 .timeline-item--editing {
   z-index: 4;
+  scroll-margin-block: 1.5rem 5rem;
 }
 
 .timeline-item--editing .timeline-item__card {
@@ -646,7 +651,7 @@ body {
 
 .timeline-edge {
   position: absolute;
-  z-index: 8;
+  z-index: 12;
   right: 0.35rem;
   left: 0.35rem;
   height: 2rem;
@@ -692,13 +697,29 @@ body {
 .day-timeline--editing {
   padding-top: 0.85rem;
   padding-bottom: 5.5rem;
+  scroll-padding-block: 5rem;
+}
+
+.day-timeline--editing .timeline-gap {
+  align-items: center;
+  padding-block: 0.35rem;
+}
+
+.day-timeline--editing .timeline-item__card {
+  min-height: 0;
+  padding-block: 0.35rem;
+}
+
+.day-timeline--editing .timeline-item__card-content {
+  max-height: 100%;
+  overflow: hidden;
 }
 
 .timeline-now {
   position: absolute;
   z-index: 5;
   right: 0;
-  left: 0;
+  left: -3.35rem;
   height: 2px;
   background: var(--danger);
   pointer-events: none;
@@ -766,6 +787,10 @@ body {
 
   .timeline-gap {
     margin-left: 2.55rem;
+  }
+
+  .timeline-now {
+    left: -2.55rem;
   }
 
   .timeline-item__actual {

@@ -1,8 +1,8 @@
-import type { PlannedItem } from '../domain/analysis';
-
 const MIN_SECTION_HEIGHT = 96;
 const MAX_SECTION_HEIGHT = 190;
+const TIMELINE_GUTTER_PX = 9;
 export const TIMELINE_SNAP_MS = 5 * 60_000;
+export const TIMELINE_EDIT_STEP_PX = 40;
 const MAGNETIC_RANGE_MS = 3 * 60_000;
 
 export const timelineSectionHeight = (plannedDurationMs: number): number => {
@@ -12,13 +12,86 @@ export const timelineSectionHeight = (plannedDurationMs: number): number => {
   );
 };
 
-export const instantFraction = (plan: PlannedItem, instant: Date): number | null => {
-  const start = plan.plannedStartUtc.getTime();
-  const end = plan.plannedEndUtc.getTime();
-  const value = instant.getTime();
-  if (value < start || value > end) return null;
-  return Math.min(1, Math.max(0, (value - start) / (end - start)));
+export const timelineEditSectionHeight = (durationMs: number): number =>
+  timelineEditDurationHeight(durationMs) + TIMELINE_GUTTER_PX;
+
+export const timelineEditDurationHeight = (durationMs: number): number =>
+  Math.max(
+    TIMELINE_EDIT_STEP_PX,
+    (Math.max(0, durationMs) / TIMELINE_SNAP_MS) * TIMELINE_EDIT_STEP_PX,
+  );
+
+export interface TimelineClockInterval {
+  readonly id: string;
+  readonly durationMs: number;
+}
+
+export interface TimelineClockPosition {
+  readonly id: string;
+  readonly fraction: number;
+}
+
+export interface TimelineRenderedCard {
+  readonly key: string;
+  readonly height: number;
+}
+
+export interface TimelineRenderedClockPosition {
+  readonly key: string;
+  readonly fraction: number;
+}
+
+export const locateTimelineClockCard = (
+  cards: readonly TimelineRenderedCard[],
+  fraction: number,
+): TimelineRenderedClockPosition | null => {
+  if (cards.length === 0) return null;
+  const heights = cards.map((card) => Math.max(1, card.height));
+  const totalHeight = heights.reduce((sum, height) => sum + height, 0);
+  let remaining = Math.max(0, fraction) * totalHeight;
+
+  for (let index = 0; index < cards.length; index += 1) {
+    const card = cards[index];
+    const height = heights[index];
+    if (!card || height === undefined) continue;
+    const last = index === cards.length - 1;
+    if (remaining < height || last) {
+      return { key: card.key, fraction: remaining / height };
+    }
+    remaining -= height;
+  }
+
+  return null;
 };
+
+export const locateTimelineClock = (
+  intervals: readonly TimelineClockInterval[],
+  elapsedMs: number,
+): TimelineClockPosition | null => {
+  if (intervals.length === 0) return null;
+  let remaining = Math.max(0, elapsedMs);
+
+  for (let index = 0; index < intervals.length; index += 1) {
+    const interval = intervals[index];
+    if (!interval) continue;
+    const durationMs = Math.max(1, interval.durationMs);
+    const last = index === intervals.length - 1;
+    if (remaining < durationMs || last) {
+      return { id: interval.id, fraction: remaining / durationMs };
+    }
+    remaining -= durationMs;
+  }
+
+  return null;
+};
+
+export const timelineDragTime = (
+  initialValue: number,
+  pointerDeltaPx: number,
+  scrollDeltaPx = 0,
+): number =>
+  initialValue +
+  ((pointerDeltaPx + scrollDeltaPx) / TIMELINE_EDIT_STEP_PX) * TIMELINE_SNAP_MS;
 
 export interface TimelineDraftSegment {
   readonly startEventId: string;

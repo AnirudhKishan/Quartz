@@ -1,15 +1,22 @@
 import { expect, test, type Page, type TestInfo } from '@playwright/test';
 
 const MONDAY = new Date('2026-03-02T00:00:00.000Z');
+const taskCard = (page: Page, name: string) =>
+  page.getByRole('heading', { name, exact: true }).locator('xpath=ancestor::article[1]');
 
-const capture = async (page: Page, testInfo: TestInfo, name: string) => {
+const capture = async (
+  page: Page,
+  testInfo: TestInfo,
+  name: string,
+  fullPage = true,
+) => {
   const overflow = await page.evaluate(() => ({
     clientWidth: document.documentElement.clientWidth,
     scrollWidth: document.documentElement.scrollWidth,
   }));
   expect(overflow.scrollWidth).toBeLessThanOrEqual(overflow.clientWidth);
   const path = testInfo.outputPath(`${name}.png`);
-  await page.screenshot({ path, fullPage: true, animations: 'disabled' });
+  await page.screenshot({ path, fullPage, animations: 'disabled' });
   await testInfo.attach(name, { path, contentType: 'image/png' });
 };
 
@@ -24,6 +31,62 @@ const startGymDay = async (page: Page) => {
     .click();
   await expect(page.getByText('Brush, hydrate and change in progress')).toBeVisible();
 };
+
+test('@timeline-geometry clock hand follows rendered planned time', async ({
+  page,
+}, testInfo) => {
+  await startGymDay(page);
+  await page.clock.fastForward('05:00');
+
+  const firstCard = taskCard(page, 'Brush, hydrate and change');
+  const marker = page.locator('.timeline-now');
+  const cardBox = await firstCard.boundingBox();
+  const markerBox = await marker.boundingBox();
+  if (!cardBox || !markerBox) throw new Error('Clock geometry is not measurable');
+  expect((markerBox.y - cardBox.y) / cardBox.height).toBeCloseTo(1 / 3, 1);
+
+  const initialOffset = markerBox.y - cardBox.y;
+  await firstCard.evaluate((card) => {
+    (card as HTMLElement).style.minHeight = `${card.getBoundingClientRect().height + 90}px`;
+  });
+  const expandedCardBox = await firstCard.boundingBox();
+  const expandedMarkerBox = await marker.boundingBox();
+  if (!expandedCardBox || !expandedMarkerBox) throw new Error('Expanded clock geometry is not measurable');
+  expect((expandedMarkerBox.y - expandedCardBox.y) / expandedCardBox.height).toBeCloseTo(1 / 3, 1);
+  expect(expandedMarkerBox.y - expandedCardBox.y).toBeGreaterThan(initialOffset + 20);
+
+  await firstCard.evaluate((card) => {
+    (card as HTMLElement).style.minHeight = '';
+  });
+  const cards = page.locator('.timeline-item__card');
+  const firstBox = await cards.nth(0).boundingBox();
+  const secondBox = await cards.nth(1).boundingBox();
+  const firstItemBox = await cards.nth(0).locator('..').boundingBox();
+  if (!firstBox || !secondBox || !firstItemBox) throw new Error('Card spacing is not measurable');
+  const gutter = secondBox.y - (firstBox.y + firstBox.height);
+  expect(gutter).toBeGreaterThanOrEqual(7);
+  expect(gutter).toBeLessThanOrEqual(11);
+  expect(firstItemBox.height - firstBox.height).toBeCloseTo(gutter, 0);
+
+  await firstCard.getByRole('button', { name: 'Open Brush, hydrate and change details' }).click();
+  await page.getByRole('button', { name: 'Pause' }).click();
+  await page.clock.fastForward('05:00');
+  expect(Number(await marker.getAttribute('data-clock-fraction'))).toBeCloseTo(2 / 3, 2);
+
+  await page.getByRole('button', { name: 'Resume Brush, hydrate and change' }).click();
+  const resumedBrushCard = page
+    .locator('.timeline-item__card')
+    .filter({ has: page.getByRole('heading', { name: 'Brush, hydrate and change' }) })
+    .first();
+  await expect(resumedBrushCard.locator('.timeline-now')).toHaveCount(1);
+  expect(Number(await marker.getAttribute('data-clock-fraction'))).toBeCloseTo(2 / 3, 2);
+
+  await page.clock.fastForward('10:00');
+  const gymCard = taskCard(page, '🏋️ Gym');
+  await expect(gymCard.locator('.timeline-now')).toHaveCount(1);
+  expect(Number(await marker.getAttribute('data-clock-fraction'))).toBeCloseTo(5 / 75, 2);
+  await capture(page, testInfo, 'clock-overrun-and-spacing');
+});
 
 test('contextual actions, pause reload, resume, and unplanned work', async ({
   page,
@@ -72,7 +135,7 @@ test('normal click opens details while double-click edits boundaries', async ({
   await page.clock.fastForward('30:00');
   await page.getByRole('button', { name: 'Next' }).click();
   await page.clock.fastForward('10:00');
-  const gymCard = page.getByRole('heading', { name: '🏋️ Gym' }).locator('..').locator('..');
+  const gymCard = taskCard(page, '🏋️ Gym');
 
   await gymCard.click();
   await expect(page.getByRole('dialog', { name: '🏋️ Gym' })).toBeVisible();
@@ -95,19 +158,51 @@ test('normal click opens details while double-click edits boundaries', async ({
   await gymCard.dblclick();
   const startEdge = page.getByRole('button', { name: 'Adjust 🏋️ Gym segment start' });
   await expect(startEdge).toBeVisible();
+  const initialEditCardBox = await gymCard.boundingBox();
+  if (!initialEditCardBox) throw new Error('Edit card has no bounding box');
+  expect(initialEditCardBox.height).toBeCloseTo(80, 0);
+  const edgeHit = await page.evaluate(
+    ({ x, y }) =>
+      document
+        .elementFromPoint(x, y)
+        ?.closest<HTMLButtonElement>('button')
+        ?.getAttribute('aria-label'),
+    {
+      x: initialEditCardBox.x + initialEditCardBox.width / 2,
+      y: initialEditCardBox.y - 8,
+    },
+  );
+  expect(edgeHit).toBe('Adjust 🏋️ Gym segment start');
   await capture(page, testInfo, 'desktop-edit-boundaries');
 
   const box = await startEdge.boundingBox();
   if (!box) throw new Error('Start edge has no bounding box');
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await page.mouse.down();
-  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2 + 5, { steps: 5 });
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2 + 40, { steps: 8 });
   await page.mouse.up();
   await expect(page.getByText('Between tasks')).toBeVisible();
+  const gapBox = await page.locator('.timeline-gap').boundingBox();
+  if (!gapBox) throw new Error('Draft gap has no bounding box');
+  expect(gapBox.height).toBeGreaterThanOrEqual(39);
+  expect(gapBox.height).toBeLessThanOrEqual(42);
   await capture(page, testInfo, 'desktop-edit-gap');
+
+  const movedBox = await startEdge.boundingBox();
+  if (!movedBox) throw new Error('Moved start edge has no bounding box');
+  await page.mouse.move(movedBox.x + movedBox.width / 2, movedBox.y + movedBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(movedBox.x + movedBox.width / 2, movedBox.y + movedBox.height / 2 - 80, {
+    steps: 12,
+  });
+  await page.mouse.up();
+  await expect(page.getByText('Between tasks')).toHaveCount(0);
+  await expect(page.locator('.timeline-draft-bar')).toContainText('2 changed');
+  await capture(page, testInfo, 'desktop-edit-top-carry');
+
   await page.getByRole('button', { name: 'Save' }).click();
   await expect(startEdge).toHaveCount(0);
-  await expect(page.getByText('Between tasks')).toBeVisible();
+  await expect(page.getByText('Between tasks')).toHaveCount(0);
 });
 
 test('completed report remains editable and shows the new timetable labels', async ({
@@ -133,9 +228,13 @@ test('completed report remains editable and shows the new timetable labels', asy
   await page.setViewportSize({ width: 390, height: 844 });
   await capture(page, testInfo, 'mobile-completed-report');
 
-  const sleepCard = page.getByRole('heading', { name: '😴 Sleep' }).locator('..').locator('..');
+  const sleepCard = taskCard(page, '😴 Sleep');
   await sleepCard.dblclick();
-  await expect(page.getByRole('button', { name: 'Adjust 😴 Sleep segment end' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Adjust 😴 Sleep segment start' })).toBeVisible();
+  const sleepEnd = page.getByRole('button', { name: 'Adjust 😴 Sleep segment end' });
+  await expect(sleepEnd).toBeVisible();
+  await sleepEnd.scrollIntoViewIfNeeded();
+  await capture(page, testInfo, 'completed-bottom-handle', false);
   await page.getByRole('button', { name: 'Cancel' }).click();
 });
 
@@ -148,10 +247,7 @@ test.describe('mobile touch interactions', () => {
 
   test('tap opens the sheet and long press enters edit mode', async ({ page }, testInfo) => {
     await startGymDay(page);
-    const card = page
-      .getByRole('heading', { name: 'Brush, hydrate and change' })
-      .locator('..')
-      .locator('..');
+    const card = taskCard(page, 'Brush, hydrate and change');
 
     await card.tap();
     await expect(page.getByRole('dialog', { name: 'Brush, hydrate and change' })).toBeVisible();
@@ -182,6 +278,9 @@ test.describe('mobile touch interactions', () => {
     await expect(
       page.getByRole('button', { name: 'Adjust Brush, hydrate and change segment start' }),
     ).toBeVisible();
+    await expect(
+      page.getByRole('button', { name: 'Adjust Brush, hydrate and change segment end' }),
+    ).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Save' })).toBeVisible();
     await capture(page, testInfo, 'mobile-long-press-edit');
   });
@@ -192,7 +291,7 @@ test('keyboard editing snaps, carries the previous edge, and restores focus', as
   await page.clock.fastForward('30:00');
   await page.getByRole('button', { name: 'Next' }).click();
   await page.clock.fastForward('10:00');
-  const gymCard = page.getByRole('heading', { name: '🏋️ Gym' }).locator('..').locator('..');
+  const gymCard = taskCard(page, '🏋️ Gym');
 
   await gymCard.focus();
   await gymCard.press('Enter');
@@ -225,7 +324,7 @@ test('crossing a completed bottom edge carries the next segment and saves', asyn
   await page.getByRole('button', { name: 'Next' }).click();
   await page.clock.fastForward('10:00');
 
-  const gymCard = page.getByRole('heading', { name: '🏋️ Gym' }).locator('..').locator('..');
+  const gymCard = taskCard(page, '🏋️ Gym');
   await gymCard.dblclick();
   const endEdge = page.getByRole('button', { name: 'Adjust 🏋️ Gym segment end' });
   await endEdge.press('ArrowDown');
@@ -248,7 +347,7 @@ test('a stale timeline draft is rejected without closing the editor', async ({ p
   await page.clock.fastForward('30:00');
   await page.getByRole('button', { name: 'Next' }).click();
   await page.clock.fastForward('10:00');
-  const gymCard = page.getByRole('heading', { name: '🏋️ Gym' }).locator('..').locator('..');
+  const gymCard = taskCard(page, '🏋️ Gym');
   await gymCard.dblclick();
   const staleEdge = page.getByRole('button', { name: 'Adjust 🏋️ Gym segment start' });
   await staleEdge.press('ArrowDown');
@@ -256,10 +355,7 @@ test('a stale timeline draft is rejected without closing the editor', async ({ p
   const otherPage = await context.newPage();
   await otherPage.clock.install({ time: new Date(MONDAY.getTime() + 40 * 60_000) });
   await otherPage.goto('/#/run');
-  const otherGymCard = otherPage
-    .getByRole('heading', { name: '🏋️ Gym' })
-    .locator('..')
-    .locator('..');
+  const otherGymCard = taskCard(otherPage, '🏋️ Gym');
   await otherGymCard.dblclick();
   await otherPage
     .getByRole('button', { name: 'Adjust 🏋️ Gym segment start' })
