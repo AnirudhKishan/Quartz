@@ -11,6 +11,7 @@ import type {
   EditTimelineCommand,
   EndPausedCommand,
   PauseCommand,
+  RecordGapTaskCommand,
   ReorderRunCommand,
   ResumeCommand,
   Run,
@@ -45,6 +46,7 @@ export interface TimetableRepository {
   appendTransition(command: TransitionCommand): Promise<void>;
   startNext(command: StartNextCommand): Promise<void>;
   startUnplanned(command: StartUnplannedCommand): Promise<void>;
+  recordGapTask(command: RecordGapTaskCommand): Promise<void>;
   pause(command: PauseCommand): Promise<void>;
   resume(command: ResumeCommand): Promise<void>;
   endPaused(command: EndPausedCommand): Promise<void>;

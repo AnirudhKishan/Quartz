@@ -3,6 +3,7 @@ import {
   applyRunPatch,
   planEndPaused,
   planPause,
+  planRecordGapTask,
   planReorderRun,
   planResume,
   planStartNext,
@@ -176,6 +177,19 @@ export class RunDriver {
     const replacementMap = new Map(planned.events.map((event) => [event.id, event]));
     this.events = this.events.map((event) => replacementMap.get(event.id) ?? event);
     this.run = applyRunPatch(this.run, planned.runPatch);
+    return this;
+  }
+
+  recordGap(label: string, startedAt: Date, endedAt: Date, observedAt: Date): this {
+    const planned = planRecordGapTask(this.timetable, this.run, this.events, {
+      runId: this.run.id,
+      label,
+      startedAt,
+      endedAt,
+      observedAt,
+      expectedSeq: this.state.lastSeq,
+    });
+    this.events = [...this.events, ...planned.events];
     return this;
   }
 }

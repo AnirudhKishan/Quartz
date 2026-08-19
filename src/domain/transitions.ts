@@ -15,6 +15,7 @@ import type {
   EditTimelineCommand,
   EndPausedCommand,
   PauseCommand,
+  RecordGapTaskCommand,
   ReorderRunCommand,
   ResumeCommand,
   Run,
@@ -49,7 +50,9 @@ export interface PlannedCorrection {
  * stored history monotonic so it can never describe a negative duration.
  */
 const monotonic = (occurredAt: Date, state: RunState): Date => {
-  const last = state.events[state.events.length - 1];
+  const last = [...state.events]
+    .reverse()
+    .find((event) => event.type !== 'recorded-start' && event.type !== 'recorded-end');
   if (!last) return occurredAt;
   return occurredAt.getTime() < last.occurredAt.getTime() ? last.occurredAt : occurredAt;
 };
@@ -282,6 +285,69 @@ export const planStartUnplanned = (
   };
 };
 
+export const planRecordGapTask = (
+  timetable: Timetable,
+  run: Run,
+  events: readonly RunEvent[],
+  command: RecordGapTaskCommand,
+): PlannedWrite => {
+  const state = reconstructRunState(timetable, run, events);
+  const label = command.label.trim();
+  if (run.status === 'skipped' || command.expectedSeq !== state.lastSeq) {
+    throw new QuartzError('stale-state', 'The timeline changed before the gap was filled.');
+  }
+  if (
+    label.length === 0 ||
+    Number.isNaN(command.startedAt.getTime()) ||
+    Number.isNaN(command.endedAt.getTime()) ||
+    command.startedAt.getTime() >= command.endedAt.getTime() ||
+    command.endedAt.getTime() > command.observedAt.getTime()
+  ) {
+    throw new QuartzError('invalid-transition-time', 'The gap task is not valid.');
+  }
+  const gapExists = state.segments.some((segment, index) => {
+    const next = state.segments[index + 1];
+    return (
+      segment.endedAt?.getTime() === command.startedAt.getTime() &&
+      next?.startedAt.getTime() === command.endedAt.getTime()
+    );
+  });
+  if (!gapExists) {
+    throw new QuartzError('stale-state', 'That gap no longer exists.');
+  }
+
+  const startSeq = state.lastSeq + 1;
+  const endSeq = state.lastSeq + 2;
+  const startId = eventId(run.id, startSeq);
+  const occurrenceId = insertedOccurrenceId(run.id, startSeq);
+  const transitionId = `${startId}:recorded`;
+  const newEvents: RunEvent[] = [
+    {
+      id: startId,
+      runId: run.id,
+      itemId: occurrenceId,
+      type: 'recorded-start',
+      occurredAt: command.startedAt,
+      inserted: { label, origin: 'unplanned', resumeTargetId: null },
+      reversesEventId: null,
+      transitionId,
+      seq: startSeq,
+    },
+    {
+      id: eventId(run.id, endSeq),
+      runId: run.id,
+      itemId: occurrenceId,
+      type: 'recorded-end',
+      occurredAt: command.endedAt,
+      reversesEventId: null,
+      transitionId,
+      seq: endSeq,
+    },
+  ];
+  reconstructRunState(timetable, run, [...events, ...newEvents]);
+  return { events: newEvents, runPatch: null, state };
+};
+
 export const planPause = (
   timetable: Timetable,
   run: Run,
@@ -511,66 +577,69 @@ export const planUndo = (
 };
 
 export const planTimelineEdit = (
-    timetable: Timetable,
-    run: Run,
-    events: readonly RunEvent[],
-    command: EditTimelineCommand,
-  ): PlannedCorrection => {
-    const state = reconstructRunState(timetable, run, events);
-    if (run.status === 'skipped') {
-      throw new QuartzError('invalid-transition-time', 'A skipped day cannot be edited.');
+  timetable: Timetable,
+  run: Run,
+  events: readonly RunEvent[],
+  command: EditTimelineCommand,
+): PlannedCorrection => {
+  const state = reconstructRunState(timetable, run, events);
+  if (run.status === 'skipped') {
+    throw new QuartzError('invalid-transition-time', 'A skipped day cannot be edited.');
+  }
+  if (command.expectedSeq !== state.lastSeq) {
+    throw new QuartzError('stale-state', 'The run changed before the timeline was saved.');
+  }
+  const effectiveById = new Map(state.effectiveEvents.map((event) => [event.id, event]));
+  const replacements = new Map<string, Date>();
+  for (const replacement of command.replacements) {
+    const current = effectiveById.get(replacement.eventId);
+    if (
+      replacements.has(replacement.eventId) ||
+      !current ||
+      Number.isNaN(replacement.occurredAt.getTime()) ||
+      Number.isNaN(replacement.expectedOccurredAt.getTime()) ||
+      replacement.occurredAt.getTime() > command.observedAt.getTime()
+    ) {
+      throw new QuartzError('invalid-transition-time', 'The timeline edit is not valid.');
     }
-    if (command.expectedSeq !== state.lastSeq) {
-      throw new QuartzError('stale-state', 'The run changed before the timeline was saved.');
+    if (current.occurredAt.getTime() !== replacement.expectedOccurredAt.getTime()) {
+      throw new QuartzError('stale-state', 'The timeline changed before it was saved.');
     }
-    const effectiveById = new Map(state.effectiveEvents.map((event) => [event.id, event]));
-    const replacements = new Map<string, Date>();
-    for (const replacement of command.replacements) {
-      const current = effectiveById.get(replacement.eventId);
-      if (
-        replacements.has(replacement.eventId) ||
-        !current ||
-        Number.isNaN(replacement.occurredAt.getTime()) ||
-        Number.isNaN(replacement.expectedOccurredAt.getTime()) ||
-        replacement.occurredAt.getTime() > command.observedAt.getTime()
-      ) {
-        throw new QuartzError('invalid-transition-time', 'The timeline edit is not valid.');
-      }
-      if (current.occurredAt.getTime() !== replacement.expectedOccurredAt.getTime()) {
-        throw new QuartzError('stale-state', 'The timeline changed before it was saved.');
-      }
-      replacements.set(replacement.eventId, replacement.occurredAt);
-    }
-    if (replacements.size === 0) {
-      throw new QuartzError('invalid-transition-time', 'No timeline changes were provided.');
-    }
+    replacements.set(replacement.eventId, replacement.occurredAt);
+  }
+  if (replacements.size === 0) {
+    throw new QuartzError('invalid-transition-time', 'No timeline changes were provided.');
+  }
 
-    const correctedEvents = events.map((event) => {
-      const occurredAt = replacements.get(event.id);
-      return occurredAt ? { ...event, occurredAt } : event;
-    });
-    const effectiveCorrected = correctedEvents.filter((event) => effectiveById.has(event.id));
-    const first = effectiveCorrected[0];
-    const last = effectiveCorrected[effectiveCorrected.length - 1];
-    if (!first || first.type !== 'started') {
-      throw new QuartzError('invalid-transition-time', 'The edited run has no valid start.');
-    }
-    const midnight = zonedLocalTimeToUtc(run.localDate, 0, timetable.timezone);
-    if (first.occurredAt.getTime() < midnight.getTime()) {
-      throw new QuartzError('invalid-transition-time', 'The day cannot start before its local date.');
-    }
-    const runPatch: RunPatch = {
-      startedAt: first.occurredAt,
-      completedAt: run.status === 'completed' ? (last?.occurredAt ?? run.completedAt) : null,
-    };
-    const editedRun = applyRunPatch(run, runPatch);
-    reconstructRunState(timetable, editedRun, correctedEvents);
+  const correctedEvents = events.map((event) => {
+    const occurredAt = replacements.get(event.id);
+    return occurredAt ? { ...event, occurredAt } : event;
+  });
+  const effectiveCorrected = correctedEvents.filter((event) => effectiveById.has(event.id));
+  const operationalCorrected = effectiveCorrected.filter(
+    (event) => event.type !== 'recorded-start' && event.type !== 'recorded-end',
+  );
+  const first = operationalCorrected[0];
+  const last = operationalCorrected[operationalCorrected.length - 1];
+  if (!first || first.type !== 'started') {
+    throw new QuartzError('invalid-transition-time', 'The edited run has no valid start.');
+  }
+  const midnight = zonedLocalTimeToUtc(run.localDate, 0, timetable.timezone);
+  if (first.occurredAt.getTime() < midnight.getTime()) {
+    throw new QuartzError('invalid-transition-time', 'The day cannot start before its local date.');
+  }
+  const runPatch: RunPatch = {
+    startedAt: first.occurredAt,
+    completedAt: run.status === 'completed' ? (last?.occurredAt ?? run.completedAt) : null,
+  };
+  const editedRun = applyRunPatch(run, runPatch);
+  reconstructRunState(timetable, editedRun, correctedEvents);
 
-    return {
-      events: correctedEvents.filter((event) => replacements.has(event.id)),
-      runPatch,
-      state,
-    };
+  return {
+    events: correctedEvents.filter((event) => replacements.has(event.id)),
+    runPatch,
+    state,
+  };
 };
 
 export const applyRunPatch = (run: Run, patch: RunPatch | null): Run =>

@@ -48,6 +48,7 @@ export interface AppStore {
   advance(kind: TransitionKind): Promise<void>;
   startNext(): Promise<void>;
   startUnplanned(label: string): Promise<void>;
+  recordGapTask(label: string, startedAt: Date, endedAt: Date): Promise<boolean>;
   pause(): Promise<void>;
   resume(): Promise<void>;
   endPaused(): Promise<void>;
@@ -188,6 +189,35 @@ export const AppProvider = ({ services, bundledTimetables, children }: AppProvid
           if (!activeState) return null;
           return services.runs.startUnplanned(activeState, label);
         }),
+      recordGapTask: async (label, startedAt, endedAt) => {
+        if (inFlight.current || !activeState) return false;
+        inFlight.current = true;
+        setBusy(true);
+        try {
+          setActiveState(
+            await services.runs.recordGapTask(
+              activeState.run.id,
+              label,
+              startedAt,
+              endedAt,
+            ),
+          );
+          setNotice(null);
+          return true;
+        } catch (error) {
+          const quartz = toQuartzError(error);
+          if (isBlockingError(quartz)) {
+            setBlockingError(quartz);
+            setPhase('blocked');
+          } else {
+            setNotice(quartz.message);
+          }
+          return false;
+        } finally {
+          inFlight.current = false;
+          setBusy(false);
+        }
+      },
       pause: () =>
         guard(async () => {
           if (!activeState) return null;

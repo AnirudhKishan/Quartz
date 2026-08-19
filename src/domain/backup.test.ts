@@ -126,6 +126,45 @@ describe('parseBackupDocument', () => {
       state.occurrences.find((occurrence) => occurrence.insertedOrigin === 'pause')?.label,
     ).toBe('Between tasks');
   });
+
+  it('round-trips a task recorded into a historical gap', async () => {
+    const { repository, run } = await populatedRepository();
+    let events = await repository.getRunEvents(run.id);
+    await repository.editTimeline({
+      runId: run.id,
+      replacements: [
+        {
+          eventId: events[2]!.id,
+          expectedOccurredAt: events[2]!.occurredAt,
+          occurredAt: new Date('2026-03-02T00:45:00.000Z'),
+        },
+      ],
+      observedAt: new Date('2026-03-02T01:00:00.000Z'),
+      expectedSeq: events.at(-1)!.seq,
+    });
+    events = await repository.getRunEvents(run.id);
+    await repository.recordGapTask({
+      runId: run.id,
+      label: 'Phone call',
+      startedAt: new Date('2026-03-02T00:30:00.000Z'),
+      endedAt: new Date('2026-03-02T00:45:00.000Z'),
+      observedAt: new Date('2026-03-02T01:00:00.000Z'),
+      expectedSeq: events.at(-1)!.seq,
+    });
+    const document = createBackupDocument(
+      {
+        timetables: [simpleTimetable],
+        runs: [(await repository.getRun(run.id))!],
+        events: await repository.getRunEvents(run.id),
+      },
+      new Date('2026-03-02T01:00:00.000Z'),
+    );
+
+    const parsed = parseBackupDocument(document);
+    const state = reconstructRunState(parsed.timetables[0]!, parsed.runs[0]!, parsed.events);
+    expect(state.occurrences.find((occurrence) => occurrence.label === 'Phone call')).toBeDefined();
+    expect(state.segments[1]?.endedAt?.toISOString()).toBe('2026-03-02T00:45:00.000Z');
+  });
 });
 
 describe('BackupService', () => {

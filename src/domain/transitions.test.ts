@@ -316,6 +316,99 @@ describe('between tasks and today order', () => {
     expect(driver.events[1]?.occurredAt.toISOString()).toBe('2026-03-02T00:30:00.000Z');
     expect(driver.events[2]?.occurredAt.toISOString()).toBe('2026-03-02T00:40:00.000Z');
   });
+
+  it('fills an exact recorded gap with a completed inserted task', () => {
+    const driver = new RunDriver(simpleTimetable, START)
+      .finish(at('2026-03-02T00:30:00.000Z'))
+      .startNext(at('2026-03-02T00:45:00.000Z'))
+      .recordGap(
+        'Phone call',
+        at('2026-03-02T00:30:00.000Z'),
+        at('2026-03-02T00:45:00.000Z'),
+        at('2026-03-02T01:00:00.000Z'),
+      );
+
+    expect(driver.events.slice(-2).map((event) => event.type)).toEqual([
+      'recorded-start',
+      'recorded-end',
+    ]);
+    expect(driver.state.segments.map((segment) => segment.startedAt.toISOString())).toEqual([
+      '2026-03-02T00:00:00.000Z',
+      '2026-03-02T00:30:00.000Z',
+      '2026-03-02T00:45:00.000Z',
+    ]);
+    expect(driver.state.occurrences.find((occurrence) => occurrence.label === 'Phone call')).toMatchObject({
+      kind: 'inserted',
+      insertedOrigin: 'unplanned',
+    });
+  });
+
+  it('rejects a stale or non-gap interval', () => {
+    const driver = new RunDriver(simpleTimetable, START)
+      .finish(at('2026-03-02T00:30:00.000Z'))
+      .startNext(at('2026-03-02T00:45:00.000Z'));
+
+    expect(() =>
+      driver.recordGap(
+        'Too short',
+        at('2026-03-02T00:35:00.000Z'),
+        at('2026-03-02T00:45:00.000Z'),
+        at('2026-03-02T01:00:00.000Z'),
+      ),
+    ).toThrow(/gap no longer exists/);
+  });
+
+  it('keeps later operational transitions monotonic after appending a historical gap', () => {
+    const driver = new RunDriver(simpleTimetable, START)
+      .finish(at('2026-03-02T00:30:00.000Z'))
+      .startNext(at('2026-03-02T00:45:00.000Z'))
+      .recordGap(
+        'Between tasks',
+        at('2026-03-02T00:30:00.000Z'),
+        at('2026-03-02T00:45:00.000Z'),
+        at('2026-03-02T01:00:00.000Z'),
+      )
+      .next(at('2026-03-02T00:40:00.000Z'));
+
+    const gymEnd = driver.state.segments.find(
+      (segment) => segment.occurrenceId === 'gym',
+    )?.endedAt;
+    expect(gymEnd?.toISOString()).toBe('2026-03-02T00:45:00.000Z');
+    expect(driver.state.currentItem?.id).toBe('breakfast');
+  });
+
+  it('does not let Undo cross a recorded historical interval', () => {
+    const driver = new RunDriver(simpleTimetable, START)
+      .finish(at('2026-03-02T00:30:00.000Z'))
+      .startNext(at('2026-03-02T00:45:00.000Z'))
+      .recordGap(
+        'Between tasks',
+        at('2026-03-02T00:30:00.000Z'),
+        at('2026-03-02T00:45:00.000Z'),
+        at('2026-03-02T01:00:00.000Z'),
+      );
+
+    expect(driver.state.canUndo).toBe(false);
+    expect(() => driver.undo(at('2026-03-02T01:01:00.000Z'))).toThrow(/no Next or Skip left/);
+  });
+
+  it('can undo new operational transitions without crossing a recorded interval', () => {
+    const driver = new RunDriver(simpleTimetable, START)
+      .finish(at('2026-03-02T00:30:00.000Z'))
+      .startNext(at('2026-03-02T00:45:00.000Z'))
+      .recordGap(
+        'Between tasks',
+        at('2026-03-02T00:30:00.000Z'),
+        at('2026-03-02T00:45:00.000Z'),
+        at('2026-03-02T01:00:00.000Z'),
+      )
+      .next(at('2026-03-02T02:00:00.000Z'));
+
+    expect(driver.state.canUndo).toBe(true);
+    driver.undo(at('2026-03-02T02:01:00.000Z'));
+    expect(driver.state.currentItem?.id).toBe('gym');
+    expect(driver.state.canUndo).toBe(false);
+  });
 });
 
 describe('inserted activities and segmented tasks', () => {

@@ -6,11 +6,17 @@ import { useApp } from '../store';
 import { useElapsed } from '../useElapsed';
 import { ClearDataControl } from '../components/ClearDataControl';
 import { DayTimeline } from '../components/DayTimeline';
+import type { TimelineGap } from '../components/DayTimeline';
 import { EmptyState, Screen } from '../components/Screen';
-import { TaskDetailsPanel } from '../components/TaskDetailsPanel';
+import { GapTaskPanel, TaskDetailsPanel } from '../components/TaskDetailsPanel';
 
 interface SelectedActivity {
   readonly id: string;
+  readonly anchorTop: number;
+  readonly trigger: HTMLElement;
+}
+
+interface SelectedGap extends TimelineGap {
   readonly anchorTop: number;
   readonly trigger: HTMLElement;
 }
@@ -23,6 +29,7 @@ export const ActiveRunScreen = () => {
     advance,
     startNext,
     startUnplanned,
+    recordGapTask,
     pause,
     resume,
     endPaused,
@@ -35,8 +42,8 @@ export const ActiveRunScreen = () => {
   } = useApp();
   const [confirmingSkipDay, setConfirmingSkipDay] = useState(false);
   const [selectedActivity, setSelectedActivity] = useState<SelectedActivity | null>(null);
+  const [selectedGap, setSelectedGap] = useState<SelectedGap | null>(null);
   const [showUndo, setShowUndo] = useState(false);
-  const [editingTimeline, setEditingTimeline] = useState(false);
   const betweenStartedAt =
     activeState?.phase === 'between'
       ? [...activeState.effectiveEvents]
@@ -153,18 +160,19 @@ export const ActiveRunScreen = () => {
         elapsedMs={elapsed}
         selectedActivityId={selectedActivity?.id}
         onSelectActivity={(id, anchorTop, trigger) =>
-          setSelectedActivity({ id, anchorTop, trigger })
+          {
+            setSelectedGap(null);
+            setSelectedActivity({ id, anchorTop, trigger });
+          }
         }
-        onSaveTimeline={saveTimeline}
-        onEditingChange={(editing) => {
-          setEditingTimeline(editing);
-          if (editing) setSelectedActivity(null);
+        onSelectGap={(gap, anchorTop, trigger) => {
+          setSelectedActivity(null);
+          setSelectedGap({ ...gap, anchorTop, trigger });
         }}
-        busy={busy}
         autoFocusCurrent={!completed}
       />
 
-      {editingTimeline ? null : completed ? (
+      {completed ? (
         <section className="completion-actions">
           <a className="button button--primary" href={`#/reports/run/${encodeURIComponent(run.id)}`}>
             See the report
@@ -233,7 +241,7 @@ export const ActiveRunScreen = () => {
         </div>
       )}
 
-      {showUndo && canUndo && !editingTimeline && (
+      {showUndo && canUndo && (
         <div
           className={`undo-toast${phase === 'between' ? ' undo-toast--between' : ''}`}
           role="status"
@@ -261,7 +269,7 @@ export const ActiveRunScreen = () => {
         </div>
       )}
 
-      {selectedActivity && !editingTimeline && (
+      {selectedActivity && (
         <TaskDetailsPanel
           state={activeState}
           activityId={selectedActivity.id}
@@ -273,6 +281,22 @@ export const ActiveRunScreen = () => {
           onPause={() => showUndoAfter(pause)}
           onStartUnplanned={(label) => showUndoAfter(() => startUnplanned(label))}
           onSkip={() => handleAdvance('skip')}
+          onEditTimes={saveTimeline}
+        />
+      )}
+
+      {selectedGap && (
+        <GapTaskPanel
+          gapStart={selectedGap.start}
+          gapEnd={selectedGap.end}
+          timezone={timetable.timezone}
+          anchorTop={selectedGap.anchorTop}
+          returnFocus={selectedGap.trigger}
+          busy={busy}
+          onClose={() => setSelectedGap(null)}
+          onAdd={(label) =>
+            recordGapTask(label, selectedGap.start, selectedGap.end)
+          }
         />
       )}
 

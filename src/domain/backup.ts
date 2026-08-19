@@ -60,7 +60,16 @@ export const createBackupDocument = (data: BackupData, exportedAt: Date): unknow
   })),
 });
 
-const EVENT_TYPES = new Set(['started', 'completed', 'skipped', 'paused', 'ended', 'undo']);
+const EVENT_TYPES = new Set([
+  'started',
+  'completed',
+  'skipped',
+  'paused',
+  'ended',
+  'recorded-start',
+  'recorded-end',
+  'undo',
+]);
 
 /**
  * Validate an untrusted backup document completely.

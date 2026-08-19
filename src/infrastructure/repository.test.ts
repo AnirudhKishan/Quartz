@@ -183,6 +183,40 @@ describe.each(adapters)('$name satisfies the repository contract', ({ create }) 
     expect(events.at(-1)?.transitionId).toBe(events.at(-1)?.id);
   });
 
+  it('persists a named task inside an exact between-task gap', async () => {
+    const run = await repository.createRun(ref, START);
+    await advance('finish', new Date('2026-03-02T00:30:00.000Z'));
+    let events = await repository.getRunEvents(run.id);
+    await repository.startNext({
+      runId: run.id,
+      itemId: 'gym',
+      occurredAt: new Date('2026-03-02T00:45:00.000Z'),
+      expectedSeq: events.at(-1)!.seq,
+    });
+    events = await repository.getRunEvents(run.id);
+    await repository.recordGapTask({
+      runId: run.id,
+      label: 'Phone call',
+      startedAt: new Date('2026-03-02T00:30:00.000Z'),
+      endedAt: new Date('2026-03-02T00:45:00.000Z'),
+      observedAt: new Date('2026-03-02T01:00:00.000Z'),
+      expectedSeq: events.at(-1)!.seq,
+    });
+
+    events = await repository.getRunEvents(run.id);
+    const stored = (await repository.getRun(run.id))!;
+    const state = reconstructRunState(simpleTimetable, stored, events);
+    expect(events.slice(-2).map((event) => event.type)).toEqual([
+      'recorded-start',
+      'recorded-end',
+    ]);
+    expect(state.segments[1]).toMatchObject({
+      startedAt: new Date('2026-03-02T00:30:00.000Z'),
+      endedAt: new Date('2026-03-02T00:45:00.000Z'),
+    });
+    expect(state.occurrences.find((occurrence) => occurrence.label === 'Phone call')).toBeDefined();
+  });
+
   it('persists an inserted task and reverses its whole transition on Undo', async () => {
       const run = await repository.createRun(ref, START);
       await repository.startUnplanned({

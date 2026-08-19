@@ -1,5 +1,6 @@
 import { useState } from 'react';
 
+import { buildRunReport } from '../../domain/analysis';
 import type { TimelineEventReplacement } from '../../domain/types';
 import {
   deviationTone,
@@ -11,11 +12,17 @@ import {
 import { useApp } from '../store';
 import { useAsync } from '../useAsync';
 import { DayTimeline } from '../components/DayTimeline';
+import type { TimelineGap } from '../components/DayTimeline';
 import { ErrorNote, Loading, Screen } from '../components/Screen';
-import { TaskDetailsPanel } from '../components/TaskDetailsPanel';
+import { GapTaskPanel, TaskDetailsPanel } from '../components/TaskDetailsPanel';
 
 interface SelectedActivity {
   readonly id: string;
+  readonly anchorTop: number;
+  readonly trigger: HTMLElement;
+}
+
+interface SelectedGap extends TimelineGap {
   readonly anchorTop: number;
   readonly trigger: HTMLElement;
 }
@@ -24,13 +31,17 @@ export const RunReportScreen = ({ runId }: { readonly runId: string }) => {
   const { services } = useApp();
   const [reloadKey, setReloadKey] = useState(0);
   const [selectedActivity, setSelectedActivity] = useState<SelectedActivity | null>(null);
+  const [selectedGap, setSelectedGap] = useState<SelectedGap | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<Error | null>(null);
   const data = useAsync(
-    async () => ({
-      report: await services.reports.loadRunReport(runId),
-      state: await services.runs.loadStateById(runId),
-    }),
+    async () => {
+      const state = await services.runs.loadStateById(runId);
+      return {
+        state,
+        report: buildRunReport(state.timetable, state.run, state.events),
+      };
+    },
     [services, runId, reloadKey],
   );
 
@@ -125,13 +136,15 @@ export const RunReportScreen = ({ runId }: { readonly runId: string }) => {
         now={services.clock.now()}
         selectedActivityId={selectedActivity?.id}
         onSelectActivity={(id, anchorTop, trigger) =>
-          setSelectedActivity({ id, anchorTop, trigger })
+          {
+            setSelectedGap(null);
+            setSelectedActivity({ id, anchorTop, trigger });
+          }
         }
-        onSaveTimeline={saveTimeline}
-        onEditingChange={(editing) => {
-          if (editing) setSelectedActivity(null);
+        onSelectGap={(gap, anchorTop, trigger) => {
+          setSelectedActivity(null);
+          setSelectedGap({ ...gap, anchorTop, trigger });
         }}
-        busy={saving}
         constrainHeight={false}
       />
 
@@ -143,6 +156,37 @@ export const RunReportScreen = ({ runId }: { readonly runId: string }) => {
           returnFocus={selectedActivity.trigger}
           busy={saving}
           onClose={() => setSelectedActivity(null)}
+          onEditTimes={saveTimeline}
+        />
+      )}
+      {selectedGap && (
+        <GapTaskPanel
+          gapStart={selectedGap.start}
+          gapEnd={selectedGap.end}
+          timezone={state.timetable.timezone}
+          anchorTop={selectedGap.anchorTop}
+          returnFocus={selectedGap.trigger}
+          busy={saving}
+          onClose={() => setSelectedGap(null)}
+          onAdd={async (label) => {
+            setSaving(true);
+            setSaveError(null);
+            try {
+              await services.runs.recordGapTask(
+                runId,
+                label,
+                selectedGap.start,
+                selectedGap.end,
+              );
+              setReloadKey((value) => value + 1);
+              return true;
+            } catch (error) {
+              setSaveError(error instanceof Error ? error : new Error(String(error)));
+              return false;
+            } finally {
+              setSaving(false);
+            }
+          }}
         />
       )}
     </Screen>

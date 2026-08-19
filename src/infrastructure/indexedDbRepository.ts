@@ -18,6 +18,7 @@ import {
   applyRunPatch,
   planEndPaused,
   planPause,
+  planRecordGapTask,
   planReorderRun,
   planResume,
   planStartNext,
@@ -33,6 +34,7 @@ import type {
   EditTimelineCommand,
   EndPausedCommand,
   PauseCommand,
+  RecordGapTaskCommand,
   ReorderRunCommand,
   ResumeCommand,
   Run,
@@ -571,6 +573,12 @@ export class IndexedDbRepository implements TimetableRepository {
   startUnplanned(command: StartUnplannedCommand): Promise<void> {
     return this.mutateRun(command.runId, (timetable, run, events) =>
       planStartUnplanned(timetable, run, events, command),
+    );
+  }
+
+  recordGapTask(command: RecordGapTaskCommand): Promise<void> {
+    return this.mutateRun(command.runId, (timetable, run, events) =>
+      planRecordGapTask(timetable, run, events, command),
     );
   }
 

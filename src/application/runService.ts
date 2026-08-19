@@ -85,6 +85,7 @@ export class RunService {
     if (!state.currentActivity) {
       throw new QuartzError('stale-state', 'There is no current task to finish.');
     }
+
     await this.repository.startUnplanned({
       runId: state.run.id,
       label,
@@ -93,6 +94,24 @@ export class RunService {
       expectedSeq: state.lastSeq,
     });
     return this.loadStateById(state.run.id);
+  }
+
+  async recordGapTask(
+    runId: string,
+    label: string,
+    startedAt: Date,
+    endedAt: Date,
+  ): Promise<RunState> {
+    const state = await this.loadStateById(runId);
+    await this.repository.recordGapTask({
+      runId,
+      label,
+      startedAt,
+      endedAt,
+      observedAt: this.clock.now(),
+      expectedSeq: state.lastSeq,
+    });
+    return this.loadStateById(runId);
   }
 
   async pause(state: RunState): Promise<RunState> {

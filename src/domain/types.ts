@@ -95,6 +95,8 @@ export type RunEventType =
   | 'skipped'
   | 'paused'
   | 'ended'
+  | 'recorded-start'
+  | 'recorded-end'
   | 'undo';
 
 /**
@@ -150,6 +152,15 @@ export interface StartUnplannedCommand {
   readonly label: string;
   readonly occurredAt: Date;
   readonly expectedItemId: string;
+  readonly expectedSeq: number;
+}
+
+export interface RecordGapTaskCommand {
+  readonly runId: string;
+  readonly label: string;
+  readonly startedAt: Date;
+  readonly endedAt: Date;
+  readonly observedAt: Date;
   readonly expectedSeq: number;
 }
 

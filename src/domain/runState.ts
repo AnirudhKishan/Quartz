@@ -23,6 +23,9 @@ export const eventId = (runId: string, seq: number): string =>
 export const sortEvents = (events: readonly RunEvent[]): RunEvent[] =>
   [...events].sort((a, b) => a.seq - b.seq);
 
+const isRecordedIntervalEvent = (event: RunEvent): boolean =>
+  event.type === 'recorded-start' || event.type === 'recorded-end';
+
 function corrupt(message: string, details: readonly string[] = []): never {
   throw new QuartzError('corrupt-history', message, details);
 }
@@ -144,7 +147,10 @@ export const reconstructRunState = (
   let resumeTargetId: string | null = null;
   let previousAt = -Infinity;
 
-  for (const event of effectiveEvents) {
+  const operationalEvents = effectiveEvents.filter((event) => !isRecordedIntervalEvent(event));
+  const recordedEvents = effectiveEvents.filter(isRecordedIntervalEvent);
+
+  for (const event of operationalEvents) {
     if (event.occurredAt.getTime() < previousAt) {
       corrupt(`Event ${event.id} occurs before the event that precedes it`);
     }
@@ -307,6 +313,69 @@ export const reconstructRunState = (
     openSegmentIndex = null;
   }
 
+  const recordedByTransition = new Map<string, RunEvent[]>();
+  for (const event of recordedEvents) {
+    const group = recordedByTransition.get(event.transitionId) ?? [];
+    group.push(event);
+    recordedByTransition.set(event.transitionId, group);
+  }
+  for (const [transitionId, group] of recordedByTransition) {
+    const start = group.find((event) => event.type === 'recorded-start');
+    const end = group.find((event) => event.type === 'recorded-end');
+    const inserted = start?.inserted ?? null;
+    if (
+      group.length !== 2 ||
+      !start ||
+      !end ||
+      start.id === transitionId ||
+      end.id === transitionId ||
+      start.itemId !== end.itemId ||
+      !inserted ||
+      inserted.origin !== 'unplanned' ||
+      inserted.resumeTargetId !== null ||
+      inserted.label.trim().length === 0 ||
+      end.inserted
+    ) {
+      corrupt(`Recorded interval ${transitionId} is not a valid inserted task`);
+    }
+    if (
+      start.occurredAt.getTime() >= end.occurredAt.getTime() ||
+      occurrenceById.has(start.itemId)
+    ) {
+      corrupt(`Recorded interval ${transitionId} has invalid boundaries`);
+    }
+    const overlaps = segments.some((segment) => {
+      const segmentEnd = segment.endedAt?.getTime() ?? Infinity;
+      return (
+        start.occurredAt.getTime() < segmentEnd &&
+        end.occurredAt.getTime() > segment.startedAt.getTime()
+      );
+    });
+    if (overlaps) {
+      corrupt(`Recorded interval ${transitionId} overlaps another activity`);
+    }
+    const occurrence: TrackedOccurrence = {
+      id: start.itemId,
+      label: inserted.label.trim(),
+      kind: 'inserted',
+      plannedItemId: null,
+      insertedOrigin: 'unplanned',
+      resumeTargetId: null,
+    };
+    occurrences.push(occurrence);
+    occurrenceById.set(occurrence.id, occurrence);
+    completed.add(occurrence.id);
+    segments.push({
+      id: start.id,
+      occurrenceId: occurrence.id,
+      startedAt: start.occurredAt,
+      endedAt: end.occurredAt,
+      startEventId: start.id,
+      endEventId: end.id,
+      endType: 'completed',
+    });
+  }
+
   let status: Run['status'];
   let phase: RunState['phase'];
   if (currentActivity !== null) {
@@ -367,6 +436,9 @@ export const reconstructRunState = (
   const nextIndex = nextPlannedIndex < orderedItems.length ? nextPlannedIndex : null;
   const nextItem = nextIndex === null ? null : (orderedItems[nextIndex] ?? null);
   const openSegment = openSegmentIndex === null ? null : (segments[openSegmentIndex] ?? null);
+  const chronologicalSegments = [...segments].sort(
+    (left, right) => left.startedAt.getTime() - right.startedAt.getTime(),
+  );
   const lastEvent = sorted[sorted.length - 1];
   const state: RunState = {
     run,
@@ -376,7 +448,7 @@ export const reconstructRunState = (
     status,
     phase,
     occurrences,
-    segments,
+    segments: chronologicalSegments,
     currentActivity,
     currentActivityStartedAt: openSegment?.startedAt ?? null,
     resumeTarget,
@@ -398,6 +470,7 @@ export const reconstructRunState = (
 export const findUndoTarget = (state: RunState): RunEvent | null => {
   for (let index = state.effectiveEvents.length - 1; index >= 0; index -= 1) {
     const event = state.effectiveEvents[index];
+    if (event?.type === 'recorded-start' || event?.type === 'recorded-end') return null;
     if (event && event.seq > 1 && event.id === event.transitionId) return event;
   }
   return null;

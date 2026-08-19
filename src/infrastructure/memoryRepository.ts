@@ -16,6 +16,7 @@ import {
   applyRunPatch,
   planEndPaused,
   planPause,
+  planRecordGapTask,
   planReorderRun,
   planResume,
   planStartNext,
@@ -30,6 +31,7 @@ import type {
   EditTimelineCommand,
   EndPausedCommand,
   PauseCommand,
+  RecordGapTaskCommand,
   ReorderRunCommand,
   ResumeCommand,
   Run,
@@ -189,6 +191,14 @@ export class InMemoryRepository implements TimetableRepository {
     const planned = planStartUnplanned(timetable, run, events, command);
     this.events.set(run.id, [...events, ...planned.events]);
     this.runs.set(run.id, applyRunPatch(run, planned.runPatch));
+  }
+
+  async recordGapTask(command: RecordGapTaskCommand): Promise<void> {
+    const run = this.requireRun(command.runId);
+    const timetable = await this.getTimetable(run.timetableId, run.timetableVersion);
+    const events = this.events.get(run.id) ?? [];
+    const planned = planRecordGapTask(timetable, run, events, command);
+    this.events.set(run.id, [...events, ...planned.events]);
   }
 
   async pause(command: PauseCommand): Promise<void> {
