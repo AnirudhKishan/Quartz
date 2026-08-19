@@ -299,7 +299,7 @@ describe('between tasks and today order', () => {
     expect(() => driver.reorder('wake')).toThrow(/not started/);
   });
 
-  it('separates a shared boundary into a valid gap atomically', () => {
+  it('moves both sides of a shared boundary atomically', () => {
     const driver = new RunDriver(simpleTimetable, START).next(
       at('2026-03-02T00:30:00.000Z'),
     );
@@ -313,8 +313,30 @@ describe('between tasks and today order', () => {
       ],
       at('2026-03-02T01:00:00.000Z'),
     );
-    expect(driver.events[1]?.occurredAt.toISOString()).toBe('2026-03-02T00:30:00.000Z');
+    expect(driver.events[1]?.occurredAt.toISOString()).toBe('2026-03-02T00:40:00.000Z');
     expect(driver.events[2]?.occurredAt.toISOString()).toBe('2026-03-02T00:40:00.000Z');
+  });
+
+  it('reports an invalid prospective edit without treating stored history as corrupt', () => {
+    const driver = new RunDriver(simpleTimetable, START)
+      .finish(at('2026-03-02T00:30:00.000Z'))
+      .startNext(at('2026-03-02T00:45:00.000Z'));
+
+    try {
+      driver.edit(
+        [
+          {
+            eventId: driver.events[2]!.id,
+            expectedOccurredAt: driver.events[2]!.occurredAt,
+            occurredAt: at('2026-03-02T00:20:00.000Z'),
+          },
+        ],
+        at('2026-03-02T01:00:00.000Z'),
+      );
+      throw new Error('Expected the overlapping edit to be rejected');
+    } catch (error) {
+      expect(error).toMatchObject({ code: 'invalid-transition-time' });
+    }
   });
 
   it('fills an exact recorded gap with a completed inserted task', () => {

@@ -105,45 +105,16 @@ export const ActiveRunScreen = () => {
   return (
     <Screen
       title={completed ? 'Day complete' : timetable.name}
-      subtitle={`${run.localDate} · ${timetable.timezone}`}
-      footer={
-        <nav className="nav">
-          <button type="button" className="link" onClick={() => navigate({ kind: 'reports' })}>
-            Reports
-          </button>
-        </nav>
-      }
+      hideHeader
+      bodyClassName="active-run"
     >
-      <div className="day-toolbar">
-        <span>
-          {completed
-            ? 'Every step is recorded.'
-            : phase === 'between'
-              ? 'Between tasks'
-              : phase === 'paused'
-                ? `${resumeTarget?.label ?? 'Task'} paused`
-                : `${currentActivity?.label ?? 'Day'} in progress`}
-        </span>
-        <details className="overflow-menu">
-          <summary aria-label="More actions">
-            <span className="sr-only">More actions</span>
-            <span aria-hidden="true">•••</span>
-          </summary>
-          <div className="overflow-menu__panel">
-            {!completed && (
-              <button
-                type="button"
-                className="menu-action"
-                disabled={busy}
-                onClick={() => setConfirmingSkipDay(true)}
-              >
-                Skip day
-              </button>
-            )}
-            <ClearDataControl compact />
-          </div>
-        </details>
-      </div>
+      {!completed && (
+        <p className="sr-only" aria-live="polite">
+          {phase === 'paused'
+            ? `${resumeTarget?.label ?? 'Task'} paused`
+            : `${currentActivity?.label ?? 'Between tasks'} in progress`}
+        </p>
+      )}
 
       {notice && (
         <p className="notice" role="status">
@@ -188,7 +159,7 @@ export const ActiveRunScreen = () => {
             </strong>
             <small>This time is reported separately.</small>
           </section>
-          <div className="sticky-actions sticky-actions--single">
+          <div className="sticky-actions">
             <button
               type="button"
               className="button button--dominant"
@@ -197,6 +168,23 @@ export const ActiveRunScreen = () => {
             >
               Start {nextItem?.label ?? 'next task'}
             </button>
+            <details className="overflow-menu overflow-menu--footer">
+              <summary role="button" aria-label="More actions">
+                <span className="sr-only">More actions</span>
+                <span aria-hidden="true">•••</span>
+              </summary>
+              <div className="overflow-menu__panel">
+                <button
+                  type="button"
+                  className="menu-action"
+                  disabled={busy}
+                  onClick={() => setConfirmingSkipDay(true)}
+                >
+                  Skip day
+                </button>
+                <ClearDataControl compact />
+              </div>
+            </details>
           </div>
         </>
       ) : phase === 'paused' ? (
@@ -209,14 +197,31 @@ export const ActiveRunScreen = () => {
           >
             Resume {resumeTarget?.label ?? 'task'}
           </button>
-          <button
-            type="button"
-            className="button button--secondary"
-            disabled={busy}
-            onClick={() => void showUndoAfter(endPaused)}
-          >
-            End {resumeTarget?.label ?? 'task'}
-          </button>
+          <details className="overflow-menu overflow-menu--footer">
+            <summary role="button" aria-label="More actions">
+              <span className="sr-only">More actions</span>
+              <span aria-hidden="true">•••</span>
+            </summary>
+            <div className="overflow-menu__panel">
+              <button
+                type="button"
+                className="menu-action"
+                disabled={busy}
+                onClick={() => void showUndoAfter(endPaused)}
+              >
+                End {resumeTarget?.label ?? 'task'}
+              </button>
+              <button
+                type="button"
+                className="menu-action"
+                disabled={busy}
+                onClick={() => setConfirmingSkipDay(true)}
+              >
+                Skip day
+              </button>
+              <ClearDataControl compact />
+            </div>
+          </details>
         </div>
       ) : (
         <div className="sticky-actions">
@@ -228,16 +233,33 @@ export const ActiveRunScreen = () => {
           >
             {nextItem ? 'Next' : 'Finish day'}
           </button>
-          {nextItem && (
-            <button
-              type="button"
-              className="button button--secondary"
-              disabled={busy}
-              onClick={() => void handleAdvance('finish')}
-            >
-              Finish
-            </button>
-          )}
+          <details className="overflow-menu overflow-menu--footer">
+            <summary role="button" aria-label="More actions">
+              <span className="sr-only">More actions</span>
+              <span aria-hidden="true">•••</span>
+            </summary>
+            <div className="overflow-menu__panel">
+              {nextItem && (
+                <button
+                  type="button"
+                  className="menu-action"
+                  disabled={busy}
+                  onClick={() => void handleAdvance('finish')}
+                >
+                  Finish
+                </button>
+              )}
+              <button
+                type="button"
+                className="menu-action"
+                disabled={busy}
+                onClick={() => setConfirmingSkipDay(true)}
+              >
+                Skip day
+              </button>
+              <ClearDataControl compact />
+            </div>
+          </details>
         </div>
       )}
 

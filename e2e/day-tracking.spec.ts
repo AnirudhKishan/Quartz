@@ -6,6 +6,11 @@ const EIGHT_THIRTY_IST = new Date('2026-03-02T03:00:00.000Z');
 const taskCard = (page: Page, name: string) =>
   page.getByRole('heading', { name, exact: true }).locator('xpath=ancestor::article[1]');
 
+const chooseOverflowAction = async (page: Page, name: string) => {
+  await page.getByRole('button', { name: 'More actions' }).click();
+  await page.getByRole('button', { name, exact: true }).click();
+};
+
 const capture = async (
   page: Page,
   testInfo: TestInfo,
@@ -31,7 +36,9 @@ const startGymDay = async (page: Page, time = MONDAY) => {
     .locator('..')
     .getByRole('button', { name: 'Start day' })
     .click();
-  await expect(page.getByText('Brush, hydrate and change in progress')).toBeVisible();
+  await expect(
+    taskCard(page, 'Brush, hydrate and change').locator('xpath=ancestor::li[1]'),
+  ).toHaveClass(/timeline-item--current/);
 };
 
 test('@timeline-geometry planned tasks stay on clock time while only the marker follows now', async ({
@@ -65,12 +72,13 @@ test('task flyout edits times without gesture-editor artifacts', async ({ page }
   await page.getByRole('button', { name: 'Edit times' }).click();
   await expect(page.getByLabel('Start')).toHaveValue('2026-03-02T06:00');
   await expect(page.getByLabel('End')).toHaveCount(0);
-  await page.getByLabel('Start').fill('2026-03-02T06:05');
+  await page.getByLabel('Start').fill('2026-03-02T05:55');
   await capture(page, testInfo, 'flyout-time-editor', false);
   await page.getByRole('button', { name: 'Save times' }).click();
 
-  await expect(taskCard(page, '🏋️ Gym').getByText(/Actual 06:05/)).toBeVisible();
-  await expect(page.getByRole('button', { name: /Add a task between 06:00 and 06:05/ })).toBeVisible();
+  await expect(taskCard(page, '🏋️ Gym').getByText(/Actual 05:55/)).toBeVisible();
+  await expect(taskCard(page, 'Brush, hydrate and change')).toContainText('Actual 05:30–05:55');
+  await expect(page.locator('.timeline-gap')).toHaveCount(0);
   await expect(page.locator('.timeline-draft-bar, .timeline-edge, .timeline-boundary')).toHaveCount(0);
   await capture(page, testInfo, 'flyout-time-edit');
 });
@@ -78,7 +86,7 @@ test('task flyout edits times without gesture-editor artifacts', async ({ page }
 test('a dotted gap adds a named task and survives reload', async ({ page }, testInfo) => {
   await startGymDay(page);
   await page.clock.fastForward('15:00');
-  await page.getByRole('button', { name: 'Finish' }).click();
+  await chooseOverflowAction(page, 'Finish');
   await page.clock.fastForward('15:00');
   await page.getByRole('button', { name: 'Start 🏋️ Gym' }).click();
 
@@ -118,7 +126,9 @@ test('contextual pause and unplanned-task actions remain available', async ({ pa
   await page.getByLabel('Task name').fill('📞 Phone call');
   await page.getByRole('button', { name: 'Start', exact: true }).click();
 
-  await expect(page.getByText('📞 Phone call in progress')).toBeVisible();
+  await expect(taskCard(page, '📞 Phone call').locator('xpath=ancestor::li[1]')).toHaveClass(
+    /timeline-item--current/,
+  );
   await capture(page, testInfo, 'contextual-actions');
 });
 
@@ -130,7 +140,13 @@ test('completed report supports flyout editing and gap insertion', async ({ page
   ];
   for (let index = 0; index < plannedMinutes.length - 1; index += 1) {
     await page.clock.fastForward(plannedMinutes[index]! * 60_000);
-    await page.getByRole('button', { name: 'Next' }).click();
+    if (index === 4) {
+      await chooseOverflowAction(page, 'Finish');
+      await page.clock.fastForward('05:00');
+      await page.getByRole('button', { name: 'Start 🥣 Breakfast' }).click();
+    } else {
+      await page.getByRole('button', { name: 'Next' }).click();
+    }
   }
   await page.clock.fastForward(plannedMinutes.at(-1)! * 60_000);
   await page.getByRole('button', { name: 'Finish day' }).click();
@@ -142,11 +158,11 @@ test('completed report supports flyout editing and gap insertion', async ({ page
   await page.getByLabel('End').fill('2026-03-02T08:40');
   await page.getByRole('button', { name: 'Save times' }).click();
 
-  const addGap = page.getByRole('button', { name: /Add a task between 08:40 and 08:45/ });
+  const addGap = page.getByRole('button', { name: /Add a task between 08:40 and 08:50/ });
   await addGap.click();
   await page.getByLabel('Task name').fill('Prepare breakfast');
   await page.getByRole('button', { name: 'Add task' }).click();
-  await expect(taskCard(page, 'Prepare breakfast')).toContainText('Actual 08:40–08:45');
+  await expect(taskCard(page, 'Prepare breakfast')).toContainText('Actual 08:40–08:50');
   await capture(page, testInfo, 'completed-report-edit');
   await page.reload();
   await expect(taskCard(page, 'Prepare breakfast')).toBeVisible();

@@ -110,9 +110,20 @@ describe('active run screen', () => {
     return context;
   };
 
+  const openMoreActions = async () => {
+    await user().click(screen.getByRole('button', { name: 'More actions' }));
+  };
+
+  const finishCurrentTask = async () => {
+    await openMoreActions();
+    await user().click(screen.getByRole('button', { name: 'Finish' }));
+  };
+
   it('shows the planned window, the elapsed time, and what is next', async () => {
     await startDay();
 
+    expect(screen.queryByText('Test plan · 2026-03-02')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Reports' })).not.toBeInTheDocument();
     expect(screen.getByText('Planned 06:00–06:30')).toBeInTheDocument();
     expect(screen.getByLabelText('Time in this step')).toHaveTextContent(/^\d{2}:\d{2}$/);
     expect(screen.getByRole('heading', { name: 'Gym' })).toBeInTheDocument();
@@ -161,7 +172,7 @@ describe('active run screen', () => {
     const { clock, repository } = await startDay();
     clock.advanceMinutes(30);
 
-    await user().click(screen.getByRole('button', { name: 'Finish' }));
+    await finishCurrentTask();
     expect((await screen.findAllByText('Between tasks')).length).toBeGreaterThan(0);
     expect(screen.getByRole('button', { name: 'Start Gym' })).toBeVisible();
 
@@ -177,7 +188,7 @@ describe('active run screen', () => {
   it('fills a between-task gap from its subtle add control', async () => {
     const { clock, repository } = await startDay();
     clock.advanceMinutes(30);
-    await user().click(screen.getByRole('button', { name: 'Finish' }));
+    await finishCurrentTask();
     clock.advanceMinutes(15);
     await user().click(screen.getByRole('button', { name: 'Start Gym' }));
     await screen.findByText('Gym in progress');
@@ -258,6 +269,7 @@ describe('active run screen', () => {
     await actor.click(screen.getByRole('button', { name: 'Open Wake details' }));
     await actor.click(await screen.findByRole('button', { name: 'Pause' }));
     expect(await screen.findByRole('button', { name: 'Resume Wake' })).toBeVisible();
+    await actor.click(screen.getByRole('button', { name: 'More actions' }));
     expect(screen.getByRole('button', { name: 'End Wake' })).toBeVisible();
 
     clock.advanceMinutes(5);
@@ -275,6 +287,7 @@ describe('active run screen', () => {
     await actor.click(screen.getByRole('button', { name: 'Open Wake details' }));
     await actor.click(await screen.findByRole('button', { name: 'Pause' }));
     clock.advanceMinutes(5);
+    await actor.click(screen.getByRole('button', { name: 'More actions' }));
     await actor.click(screen.getByRole('button', { name: 'End Wake' }));
 
     expect(await screen.findByText('Between tasks in progress')).toBeInTheDocument();
@@ -298,6 +311,7 @@ describe('active run screen', () => {
     await screen.findByText('Gym in progress');
     const eventsBeforeSkip = await repository.getRunEvents(run.id);
 
+    await openMoreActions();
     await user().click(screen.getByRole('button', { name: 'Skip day' }));
     expect(screen.getByRole('heading', { name: 'Stop tracking the whole day?' })).toBeVisible();
     await user().click(screen.getByRole('button', { name: 'Confirm skip day' }));
@@ -338,6 +352,7 @@ describe('active run screen', () => {
     await user().click(await screen.findByRole('button', { name: 'Start day' }));
     await screen.findByRole('heading', { name: 'Wake' });
 
+    await openMoreActions();
     await user().click(screen.getByRole('button', { name: 'Next' }));
 
     await waitFor(() => expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled());
@@ -358,14 +373,33 @@ describe('active run screen', () => {
     await actor.click(screen.getByRole('button', { name: 'Open Gym details' }));
     await actor.click(screen.getByRole('button', { name: 'Edit times' }));
     await actor.clear(screen.getByLabelText('Start'));
-    await actor.type(screen.getByLabelText('Start'), '2026-03-02T06:45');
+    await actor.type(screen.getByLabelText('Start'), '2026-03-02T06:35');
     await actor.click(screen.getByRole('button', { name: 'Save times' }));
 
-    expect(await screen.findByText(/Actual 06:45/)).toBeInTheDocument();
+    expect(await screen.findByText(/Actual 06:35/)).toBeInTheDocument();
     const run = await repository.getActiveRun();
     const events = await repository.getRunEvents(run!.id);
-    expect(events[1]?.occurredAt.toISOString()).toBe('2026-03-02T01:10:00.000Z');
-    expect(events[2]?.occurredAt.toISOString()).toBe('2026-03-02T01:15:00.000Z');
+    expect(events[1]?.occurredAt.toISOString()).toBe('2026-03-02T01:05:00.000Z');
+    expect(events[2]?.occurredAt.toISOString()).toBe('2026-03-02T01:05:00.000Z');
+  });
+
+  it('keeps an overlapping time edit in the flyout instead of blocking the app', async () => {
+    const { clock } = await startDay();
+    clock.advanceMinutes(30);
+    await finishCurrentTask();
+    clock.advanceMinutes(15);
+    await user().click(screen.getByRole('button', { name: 'Start Gym' }));
+
+    const actor = user();
+    await actor.click(screen.getByRole('button', { name: 'Open Gym details' }));
+    await actor.click(screen.getByRole('button', { name: 'Edit times' }));
+    await actor.clear(screen.getByLabelText('Start'));
+    await actor.type(screen.getByLabelText('Start'), '2026-03-02T06:20');
+    await actor.click(screen.getByRole('button', { name: 'Save times' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/overlap another task/i);
+    expect(screen.getByRole('dialog', { name: 'Gym' })).toBeVisible();
+    expect(screen.queryByRole('heading', { name: 'Quartz needs attention' })).not.toBeInTheDocument();
   });
 
   it('edits the first task start from the task flyout', async () => {
@@ -387,7 +421,7 @@ describe('active run screen', () => {
 
   it('clears local data from the overflow menu and reseeds a fresh install', async () => {
     const { repository } = await startDay();
-    await user().click(screen.getByText('More actions'));
+    await openMoreActions();
     await user().click(screen.getByRole('button', { name: 'Clear all local data' }));
     await user().click(screen.getByRole('button', { name: 'Permanently clear data' }));
 

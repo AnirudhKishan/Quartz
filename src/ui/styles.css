@@ -261,15 +261,10 @@ body {
 
 /* Active run */
 
-.day-toolbar {
+.active-run {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 1rem;
-  margin-bottom: 0.75rem;
-  color: var(--muted);
-  font-size: 0.9rem;
+  min-height: 0;
+  flex-direction: column;
 }
 
 .overflow-menu {
@@ -307,7 +302,8 @@ body {
 }
 
 .overflow-menu--footer .overflow-menu__panel {
-  bottom: 3rem;
+  bottom: calc(100% + 0.35rem);
+  margin-top: 0;
 }
 
 .menu-action {
@@ -339,6 +335,12 @@ body {
   overscroll-behavior: contain;
   scrollbar-color: var(--border) transparent;
   padding: 0.25rem 0.15rem 1rem;
+}
+
+.active-run > .day-timeline {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
 }
 
 .day-timeline--unconstrained {
@@ -649,13 +651,24 @@ body {
   z-index: 10;
   bottom: 0;
   display: grid;
-  grid-template-columns: minmax(0, 2fr) minmax(6rem, 1fr);
+  grid-template-columns: minmax(0, 3fr) minmax(0, 1fr);
   gap: 0.65rem;
   margin: 0 -0.25rem;
   padding: 0.8rem 0.25rem calc(0.35rem + env(safe-area-inset-bottom));
   border-top: 1px solid var(--border);
   background: rgb(13 17 23 / 96%);
   backdrop-filter: blur(10px);
+}
+
+.sticky-actions .overflow-menu {
+  align-self: center;
+  width: 100%;
+}
+
+.sticky-actions .overflow-menu > summary {
+  width: 100%;
+  height: 3.75rem;
+  font-size: 1.25rem;
 }
 
 .sticky-actions .button {
@@ -665,10 +678,6 @@ body {
 
 .sticky-actions .button--dominant {
   font-size: 1.25rem;
-}
-
-.sticky-actions--single {
-  grid-template-columns: 1fr;
 }
 
 @media (max-width: 25rem) {

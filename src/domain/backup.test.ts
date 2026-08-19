@@ -128,18 +128,21 @@ describe('parseBackupDocument', () => {
   });
 
   it('round-trips a task recorded into a historical gap', async () => {
-    const { repository, run } = await populatedRepository();
-    let events = await repository.getRunEvents(run.id);
-    await repository.editTimeline({
+    const repository = new InMemoryRepository(sequentialIdGenerator());
+    await repository.saveTimetable(simpleTimetable);
+    const run = await repository.createRun({ timetableId: 'test-plan', version: 1 }, START);
+    await repository.appendTransition({
       runId: run.id,
-      replacements: [
-        {
-          eventId: events[2]!.id,
-          expectedOccurredAt: events[2]!.occurredAt,
-          occurredAt: new Date('2026-03-02T00:45:00.000Z'),
-        },
-      ],
-      observedAt: new Date('2026-03-02T01:00:00.000Z'),
+      kind: 'finish',
+      occurredAt: new Date('2026-03-02T00:30:00.000Z'),
+      expectedItemId: 'wake',
+      expectedSeq: 1,
+    });
+    let events = await repository.getRunEvents(run.id);
+    await repository.startNext({
+      runId: run.id,
+      itemId: 'gym',
+      occurredAt: new Date('2026-03-02T00:45:00.000Z'),
       expectedSeq: events.at(-1)!.seq,
     });
     events = await repository.getRunEvents(run.id);

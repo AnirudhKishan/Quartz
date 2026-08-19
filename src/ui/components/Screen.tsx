@@ -8,20 +8,34 @@ export interface ScreenProps {
   readonly back?: { readonly label: string; readonly route: Route };
   readonly children: ReactNode;
   readonly footer?: ReactNode;
+  readonly hideHeader?: boolean;
+  readonly bodyClassName?: string;
 }
 
-export const Screen = ({ title, subtitle, back, children, footer }: ScreenProps) => (
+export const Screen = ({
+  title,
+  subtitle,
+  back,
+  children,
+  footer,
+  hideHeader = false,
+  bodyClassName,
+}: ScreenProps) => (
   <div className="screen">
-    <header className="screen__header">
-      {back && (
-        <a className="screen__back" href={routeToHash(back.route)}>
-          ← {back.label}
-        </a>
-      )}
-      <h1 className="screen__title">{title}</h1>
-      {subtitle && <p className="screen__subtitle">{subtitle}</p>}
-    </header>
-    <main className="screen__body">{children}</main>
+    {hideHeader ? (
+      <h1 className="sr-only">{title}</h1>
+    ) : (
+      <header className="screen__header">
+        {back && (
+          <a className="screen__back" href={routeToHash(back.route)}>
+            ← {back.label}
+          </a>
+        )}
+        <h1 className="screen__title">{title}</h1>
+        {subtitle && <p className="screen__subtitle">{subtitle}</p>}
+      </header>
+    )}
+    <main className={`screen__body${bodyClassName ? ` ${bodyClassName}` : ''}`}>{children}</main>
     {footer && <footer className="screen__footer">{footer}</footer>}
   </div>
 );

@@ -590,11 +590,11 @@ export const planTimelineEdit = (
     throw new QuartzError('stale-state', 'The run changed before the timeline was saved.');
   }
   const effectiveById = new Map(state.effectiveEvents.map((event) => [event.id, event]));
-  const replacements = new Map<string, Date>();
+  const requested = new Map<string, Date>();
   for (const replacement of command.replacements) {
     const current = effectiveById.get(replacement.eventId);
     if (
-      replacements.has(replacement.eventId) ||
+      requested.has(replacement.eventId) ||
       !current ||
       Number.isNaN(replacement.occurredAt.getTime()) ||
       Number.isNaN(replacement.expectedOccurredAt.getTime()) ||
@@ -605,10 +605,32 @@ export const planTimelineEdit = (
     if (current.occurredAt.getTime() !== replacement.expectedOccurredAt.getTime()) {
       throw new QuartzError('stale-state', 'The timeline changed before it was saved.');
     }
-    replacements.set(replacement.eventId, replacement.occurredAt);
+    requested.set(replacement.eventId, replacement.occurredAt);
   }
-  if (replacements.size === 0) {
+  if (requested.size === 0) {
     throw new QuartzError('invalid-transition-time', 'No timeline changes were provided.');
+  }
+
+  const replacements = new Map(requested);
+  for (const [eventId, occurredAt] of requested) {
+    const current = effectiveById.get(eventId)!;
+    for (const sibling of state.effectiveEvents) {
+      if (
+        sibling.id === current.id ||
+        sibling.transitionId !== current.transitionId ||
+        sibling.occurredAt.getTime() !== current.occurredAt.getTime()
+      ) {
+        continue;
+      }
+      const requestedSibling = requested.get(sibling.id);
+      if (requestedSibling && requestedSibling.getTime() !== occurredAt.getTime()) {
+        throw new QuartzError(
+          'invalid-transition-time',
+          'Both sides of a shared task boundary must use the same time.',
+        );
+      }
+      replacements.set(sibling.id, occurredAt);
+    }
   }
 
   const correctedEvents = events.map((event) => {
@@ -633,7 +655,17 @@ export const planTimelineEdit = (
     completedAt: run.status === 'completed' ? (last?.occurredAt ?? run.completedAt) : null,
   };
   const editedRun = applyRunPatch(run, runPatch);
-  reconstructRunState(timetable, editedRun, correctedEvents);
+  try {
+    reconstructRunState(timetable, editedRun, correctedEvents);
+  } catch (error) {
+    if (error instanceof QuartzError && error.code === 'corrupt-history') {
+      throw new QuartzError(
+        'invalid-transition-time',
+        'These times overlap another task. Choose times in the available range.',
+      );
+    }
+    throw error;
+  }
 
   return {
     events: correctedEvents.filter((event) => replacements.has(event.id)),

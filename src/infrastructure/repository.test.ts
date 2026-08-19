@@ -299,7 +299,7 @@ describe.each(adapters)('$name satisfies the repository contract', ({ create }) 
       expect(state.nextItem?.id).toBe('gym');
   });
 
-  it('atomically separates a shared boundary into a gap', async () => {
+  it('atomically moves both sides of a shared boundary', async () => {
     const run = await repository.createRun(ref, START);
     await advance('next', new Date('2026-03-02T00:30:00.000Z'));
     const events = await repository.getRunEvents(run.id);
@@ -317,7 +317,7 @@ describe.each(adapters)('$name satisfies the repository contract', ({ create }) 
     });
 
     const edited = await repository.getRunEvents(run.id);
-    expect(edited[1]?.occurredAt.toISOString()).toBe('2026-03-02T00:30:00.000Z');
+    expect(edited[1]?.occurredAt.toISOString()).toBe('2026-03-02T00:40:00.000Z');
     expect(edited[2]?.occurredAt.toISOString()).toBe('2026-03-02T00:40:00.000Z');
   });
 
