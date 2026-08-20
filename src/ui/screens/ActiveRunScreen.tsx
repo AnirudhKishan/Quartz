@@ -44,6 +44,7 @@ export const ActiveRunScreen = () => {
   const [selectedActivity, setSelectedActivity] = useState<SelectedActivity | null>(null);
   const [selectedGap, setSelectedGap] = useState<SelectedGap | null>(null);
   const [showUndo, setShowUndo] = useState(false);
+  const [selectNextDayAfterCompletion, setSelectNextDayAfterCompletion] = useState(false);
   const betweenStartedAt =
     activeState?.phase === 'between'
       ? [...activeState.effectiveEvents]
@@ -68,6 +69,12 @@ export const ActiveRunScreen = () => {
     return () => window.clearTimeout(timer);
   }, [showUndo]);
 
+  useEffect(() => {
+    if (selectNextDayAfterCompletion && activeState?.status === 'completed') {
+      navigate({ kind: 'select' });
+    }
+  }, [activeState?.status, selectNextDayAfterCompletion]);
+
   if (!activeState) {
     return (
       <Screen title="No day running" back={{ label: 'Timetables', route: { kind: 'select' } }}>
@@ -87,6 +94,7 @@ export const ActiveRunScreen = () => {
     nextItem,
   } = activeState;
   const completed = status === 'completed';
+  const isFinalSleep = !nextItem && currentActivity?.id === 'sleep';
   const now = services.clock.now();
 
   const showUndoAfter = async (action: () => Promise<void>) => {
@@ -95,6 +103,10 @@ export const ActiveRunScreen = () => {
   };
   const handleAdvance = (kind: TransitionKind) =>
     showUndoAfter(() => advance(kind));
+  const finishSleepAndSelectNextDay = async () => {
+    setSelectNextDayAfterCompletion(true);
+    await advance('next');
+  };
   const handleUndo = async () => {
     await undo();
     setShowUndo(false);
@@ -230,9 +242,11 @@ export const ActiveRunScreen = () => {
             type="button"
             className="button button--dominant"
             disabled={busy}
-            onClick={() => void handleAdvance('next')}
+            onClick={() =>
+              void (isFinalSleep ? finishSleepAndSelectNextDay() : handleAdvance('next'))
+            }
           >
-            {nextItem ? 'Next' : 'Finish day'}
+            {nextItem ? 'Next' : isFinalSleep ? 'Wake up & finish day' : 'Finish day'}
           </button>
           <details className="overflow-menu overflow-menu--footer">
             <summary role="button" aria-label="More actions">

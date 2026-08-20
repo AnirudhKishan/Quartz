@@ -8,6 +8,8 @@ import type { TimetableRepository } from '../application/repository';
 import type { Clock } from '../domain/clock';
 import { sequentialIdGenerator } from '../domain/clock';
 import { QuartzError } from '../domain/errors';
+import { parseTimetable } from '../domain/timetable';
+import type { Timetable } from '../domain/types';
 import { InMemoryRepository } from '../infrastructure/memoryRepository';
 import { simpleTimetable } from '../test/fixtures';
 import { AppProvider } from './store';
@@ -32,6 +34,7 @@ const setup = (
     repository?: TimetableRepository;
     clock?: MovableClock;
     hash?: string;
+    timetables?: readonly Timetable[];
   } = {},
 ) => {
   window.location.hash = overrides.hash ?? '#/';
@@ -41,7 +44,7 @@ const setup = (
   const services: Services = createServices(repository, clock);
 
   render(
-    <AppProvider services={services} bundledTimetables={[simpleTimetable]}>
+    <AppProvider services={services} bundledTimetables={overrides.timetables ?? [simpleTimetable]}>
       <App />
     </AppProvider>,
   );
@@ -335,6 +338,48 @@ describe('active run screen', () => {
     expect(await screen.findByRole('heading', { name: 'Day complete' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'See the report' })).toBeInTheDocument();
     expect(await repository.getActiveRun()).toBeNull();
+  });
+
+  it('finishes overnight sleep into the next day timetable selection', async () => {
+    const sleepPlan = (id: string, name: string) =>
+      parseTimetable({
+        id,
+        name,
+        version: 1,
+        timezone: 'Asia/Kolkata',
+        eligibleWeekdays: ['wednesday', 'thursday'],
+        items: [
+          {
+            id: 'sleep',
+            label: '😴 Sleep',
+            plannedStart: '21:30',
+            plannedEnd: '05:30',
+          },
+        ],
+      });
+    const clock = movableClock('2026-08-19T16:00:00.000Z');
+    const { repository } = setup({
+      clock,
+      timetables: [
+        sleepPlan('weekday-gym', 'Gym weekday'),
+        sleepPlan('weekday-no-gym', 'No-gym weekday'),
+      ],
+    });
+    const actor = user();
+    const gymCard = (await screen.findByRole('heading', { name: 'Gym weekday' })).closest('li')!;
+    await actor.click(within(gymCard).getByRole('button', { name: 'Start day' }));
+    expect(await screen.findByRole('button', { name: 'Wake up & finish day' })).toBeVisible();
+
+    clock.advanceMinutes(10 * 60);
+    await actor.click(screen.getByRole('button', { name: 'Wake up & finish day' }));
+
+    expect(await screen.findByRole('heading', { name: 'Quartz' })).toBeVisible();
+    expect(screen.getByRole('heading', { name: 'Gym weekday' })).toBeVisible();
+    expect(screen.getByRole('heading', { name: 'No-gym weekday' })).toBeVisible();
+    const completed = (await repository.listRuns())[0]!;
+    const events = await repository.getRunEvents(completed.id);
+    expect(events.at(-1)?.occurredAt.toISOString()).toBe('2026-08-20T02:00:00.000Z');
+    expect(completed.status).toBe('completed');
   });
 
   it('locks the controls while a transition is in flight', async () => {

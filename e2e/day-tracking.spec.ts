@@ -164,8 +164,12 @@ test('completed report supports flyout editing and gap insertion', async ({ page
     }
   }
   await page.clock.fastForward(plannedMinutes.at(-1)! * 60_000);
-  await page.getByRole('button', { name: 'Finish day' }).click();
-  await page.getByRole('link', { name: 'See the report' }).click();
+  await page.getByRole('button', { name: 'Wake up & finish day' }).click();
+  await expect(page).toHaveURL(/#\/$/);
+  await expect(page.getByRole('heading', { name: 'Gym weekday', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'No-gym weekday', exact: true })).toBeVisible();
+  await page.goto('/#/reports');
+  await page.getByRole('link', { name: 'Open day' }).click();
 
   await expect(page.getByRole('heading', { name: /2 Mar 2026/ })).toBeVisible();
   await page.getByRole('button', { name: 'Open 🕉️ Pooja details' }).click();
