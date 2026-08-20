@@ -16,7 +16,7 @@
     { "id": "lunch", "label": "🍽️ Lunch", "plannedStart": "13:00", "plannedEnd": "13:45" },
     { "id": "work-afternoon", "label": "💼 Work", "plannedStart": "13:45", "plannedEnd": "17:30" },
     { "id": "commute-home", "label": "🚗 Commute home", "plannedStart": "17:30", "plannedEnd": "18:45" },
-    { "id": "decompress", "label": "Decompress, wash and change", "plannedStart": "18:45", "plannedEnd": "19:00" },
+    { "id": "decompress", "label": "Decompress and change", "plannedStart": "18:45", "plannedEnd": "19:00" },
     { "id": "evening-pooja", "label": "🕉️ Evening Pooja", "plannedStart": "19:00", "plannedEnd": "19:15" },
     { "id": "free-time", "label": "Free time or optional work", "plannedStart": "19:15", "plannedEnd": "20:00" },
     { "id": "dinner", "label": "🍽️ Dinner", "plannedStart": "20:00", "plannedEnd": "20:45" },
