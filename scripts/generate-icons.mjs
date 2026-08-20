@@ -14,8 +14,12 @@ import { fileURLToPath } from 'node:url';
 const OUT_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'public', 'icons');
 
 const BACKGROUND = [13, 17, 23];
-const FACE = [47, 129, 247];
-const HIGHLIGHT = [126, 179, 255];
+const FACE = [23, 54, 95];
+const HIGHLIGHT = [33, 77, 131];
+const OUTLINE = [55, 135, 247];
+const TIMELINE = [169, 207, 255];
+const CURRENT = [248, 81, 73];
+const WHITE = [255, 255, 255];
 
 const crcTable = Array.from({ length: 256 }, (_, n) => {
   let c = n;
@@ -66,28 +70,110 @@ const encodePng = (size, pixel) => {
 };
 
 /**
- * A quartz crystal: a hexagon with a lighter left face.
+ * The Quartz timeline inside a faceted crystal.
  *
  * `inset` shrinks the mark so a maskable icon survives being cropped to a circle.
  */
-const crystal = (size, inset) => {
+const timelinePrism = (size, inset) => {
   const cx = size / 2;
   const cy = size / 2;
   const radius = (size / 2) * inset;
-  const halfWidth = radius * 0.62;
-  const shoulder = radius * 0.5;
+  const inCrystal = (x, y, shapeRadius) => {
+    const dx = x - cx;
+    const dy = y - cy;
+    const halfWidth = shapeRadius * 0.62;
+    const shoulder = shapeRadius * 0.5;
+    if (Math.abs(dx) > halfWidth) return false;
+    const taper = Math.max(0, Math.abs(dy) - shoulder) / (shapeRadius - shoulder);
+    return Math.abs(dy) <= shapeRadius && Math.abs(dx) <= halfWidth * (1 - taper);
+  };
+  const nearSegment = (x, y, x1, y1, x2, y2, width) => {
+    const vx = x2 - x1;
+    const vy = y2 - y1;
+    const lengthSquared = vx * vx + vy * vy;
+    const projection = Math.max(
+      0,
+      Math.min(1, ((x - x1) * vx + (y - y1) * vy) / lengthSquared),
+    );
+    const dx = x - (x1 + projection * vx);
+    const dy = y - (y1 + projection * vy);
+    return dx * dx + dy * dy <= width * width;
+  };
+  const sample = (x, y) => {
+    if (!inCrystal(x, y, radius)) return BACKGROUND;
+    if (!inCrystal(x, y, radius - Math.max(2, radius * 0.035))) return OUTLINE;
+
+    const base = x < cx ? HIGHLIGHT : FACE;
+    const timelineX = cx - radius * 0.23;
+    const timelineTop = cy - radius * 0.64;
+    const timelineBottom = cy + radius * 0.64;
+    const lineWidth = Math.max(1.25, radius * 0.022);
+    const nodeRadius = radius * 0.075;
+    const nodeStroke = radius * 0.025;
+    const nodes = [-0.52, -0.06, 0.52].map((offset) => cy + radius * offset);
+
+    const currentY = cy + radius * 0.16;
+    if (
+      nearSegment(
+        x,
+        y,
+        cx - radius * 0.47,
+        currentY,
+        cx + radius * 0.48,
+        currentY,
+        radius * 0.027,
+      )
+    ) {
+      return CURRENT;
+    }
+
+    if (nearSegment(x, y, timelineX, timelineTop, timelineX, timelineBottom, lineWidth)) {
+      return TIMELINE;
+    }
+
+    for (const nodeY of nodes) {
+      const distance = Math.hypot(x - timelineX, y - nodeY);
+      if (distance <= nodeRadius - nodeStroke) return BACKGROUND;
+      if (distance <= nodeRadius) return TIMELINE;
+    }
+
+    if (Math.hypot(x - timelineX, y - currentY) <= radius * 0.047) return WHITE;
+
+    const bars = [
+      { y: cy - radius * 0.54, end: cx + radius * 0.38 },
+      { y: cy - radius * 0.08, end: cx + radius * 0.25 },
+      { y: cy + radius * 0.5, end: cx + radius * 0.42 },
+    ];
+    for (const bar of bars) {
+      if (
+        nearSegment(
+          x,
+          y,
+          cx + radius * 0.01,
+          bar.y,
+          bar.end,
+          bar.y,
+          radius * 0.032,
+        )
+      ) {
+        return OUTLINE;
+      }
+    }
+    return base;
+  };
 
   return (x, y) => {
-    const dx = x + 0.5 - cx;
-    const dy = y + 0.5 - cy;
-    if (Math.abs(dx) > halfWidth) return BACKGROUND;
-
-    // Point at top and bottom, straight sides between the shoulders.
-    const taper = Math.max(0, Math.abs(dy) - shoulder) / (radius - shoulder);
-    if (Math.abs(dy) > radius) return BACKGROUND;
-    if (Math.abs(dx) > halfWidth * (1 - taper)) return BACKGROUND;
-
-    return dx < -halfWidth * 0.12 ? HIGHLIGHT : FACE;
+    const samples = 4;
+    const total = [0, 0, 0];
+    for (let sampleY = 0; sampleY < samples; sampleY += 1) {
+      for (let sampleX = 0; sampleX < samples; sampleX += 1) {
+        const color = sample(x + (sampleX + 0.5) / samples, y + (sampleY + 0.5) / samples);
+        total[0] += color[0];
+        total[1] += color[1];
+        total[2] += color[2];
+      }
+    }
+    return total.map((channel) => Math.round(channel / (samples * samples)));
   };
 };
 
@@ -100,6 +186,6 @@ const targets = [
 ];
 
 for (const { name, size, inset } of targets) {
-  writeFileSync(join(OUT_DIR, name), encodePng(size, crystal(size, inset)));
+  writeFileSync(join(OUT_DIR, name), encodePng(size, timelinePrism(size, inset)));
   console.log(`wrote ${name} (${size}x${size})`);
 }
