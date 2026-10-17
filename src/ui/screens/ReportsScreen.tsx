@@ -4,7 +4,7 @@ import { useAsync } from '../useAsync';
 import { EmptyState, ErrorNote, Loading, Screen } from '../components/Screen';
 
 export const ReportsScreen = () => {
-  const { services } = useApp();
+  const { services, telemetry } = useApp();
   const data = useAsync(
     async () => ({
       runs: await services.reports.listCompletedRuns(),
@@ -12,6 +12,19 @@ export const ReportsScreen = () => {
     }),
     [services],
   );
+
+  useEffect(() => {
+    if (data.status !== 'ready') return;
+    telemetry.trackEvent('reports_overview_viewed', {
+      completedRunCount: data.value.runs.length,
+      measuredTimetableCount: data.value.timetables.length,
+      totalSkippedCount: data.value.runs.reduce((total, run) => total + run.skippedCount, 0),
+      totalOverrunMs: data.value.runs.reduce(
+        (total, run) => total + run.totalPositiveDurationDeviationMs,
+        0,
+      ),
+    });
+  }, [data, telemetry]);
 
   return (
     <Screen
@@ -80,3 +93,4 @@ export const ReportsScreen = () => {
     </Screen>
   );
 };
+import { useEffect } from 'react';

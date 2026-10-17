@@ -28,11 +28,19 @@ import type {
   TimetableRef,
   TransitionKind,
 } from '../domain/types';
+import {
+  createNoopTelemetry,
+  type Telemetry,
+  type TelemetryProperties,
+} from '../infrastructure/telemetry';
 
 export type AppPhase = 'loading' | 'ready' | 'blocked';
 
 export interface AppStore {
   readonly services: Services;
+  readonly telemetry: Telemetry;
+  readonly telemetryAvailable: boolean;
+  readonly telemetryEnabled: boolean;
   readonly phase: AppPhase;
   /** Set only when the app cannot safely offer actions. */
   readonly blockingError: QuartzError | null;
@@ -57,6 +65,7 @@ export interface AppStore {
   editTimeline(replacements: EditTimelineCommand['replacements']): Promise<boolean>;
   skipDay(): Promise<boolean>;
   clearAllData(): Promise<boolean>;
+  setTelemetryEnabled(enabled: boolean): Promise<void>;
   reload(): Promise<void>;
 }
 
@@ -80,16 +89,23 @@ const toQuartzError = (error: unknown): QuartzError =>
 export interface AppProviderProps {
   readonly services: Services;
   readonly bundledTimetables: readonly Timetable[];
+  readonly telemetry?: Telemetry;
   readonly children: ReactNode;
 }
 
-export const AppProvider = ({ services, bundledTimetables, children }: AppProviderProps) => {
+export const AppProvider = ({
+  services,
+  bundledTimetables,
+  telemetry = createNoopTelemetry(),
+  children,
+}: AppProviderProps) => {
   const [phase, setPhase] = useState<AppPhase>('loading');
   const [blockingError, setBlockingError] = useState<QuartzError | null>(null);
   const [activeState, setActiveState] = useState<RunState | null>(null);
   const [dayDecision, setDayDecision] = useState<DayDecision | null>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [telemetryEnabled, setTelemetryEnabledState] = useState(telemetry.isEnabled());
   const inFlight = useRef(false);
 
   const load = useCallback(
@@ -100,11 +116,22 @@ export const AppProvider = ({ services, bundledTimetables, children }: AppProvid
       setBlockingError(null);
       const outcome = await bootstrap(services, { bundledTimetables });
       if (outcome.kind === 'failed') {
+        telemetry.trackException(new Error('Quartz bootstrap failed'), {
+          operation: 'bootstrap',
+          errorCode: outcome.error.code,
+          blocking: true,
+          initial,
+        });
         setBlockingError(outcome.error);
         setActiveState(null);
         setPhase('blocked');
         return;
       }
+      telemetry.trackEvent('app_ready', {
+        initial,
+        hasActiveRun: outcome.activeState !== null,
+        timetableCount: bundledTimetables.length,
+      });
       setActiveState(outcome.activeState);
       const timezone = outcome.activeState?.timetable.timezone ?? bundledTimetables[0]?.timezone;
       setDayDecision(
@@ -117,7 +144,7 @@ export const AppProvider = ({ services, bundledTimetables, children }: AppProvid
       );
       setPhase('ready');
     },
-    [services, bundledTimetables],
+    [services, bundledTimetables, telemetry],
   );
 
   useEffect(() => {
@@ -132,15 +159,26 @@ export const AppProvider = ({ services, bundledTimetables, children }: AppProvid
    * already won, so the user sees the truth instead of an error.
    */
   const guard = useCallback(
-    async (action: () => Promise<RunState | null>) => {
+    async (
+      eventName: string,
+      action: () => Promise<RunState | null>,
+      properties: TelemetryProperties = {},
+    ) => {
       if (inFlight.current) return;
       inFlight.current = true;
       setBusy(true);
       try {
-        setActiveState(await action());
+        const nextState = await action();
+        setActiveState(nextState);
         setNotice(null);
+        if (nextState) telemetry.trackEvent(eventName, properties);
       } catch (error) {
         const quartz = toQuartzError(error);
+        telemetry.trackException(new Error('Quartz action failed'), {
+          operation: eventName,
+          errorCode: quartz.code,
+          blocking: isBlockingError(quartz),
+        });
         if (isBlockingError(quartz)) {
           setBlockingError(quartz);
           setPhase('blocked');
@@ -159,12 +197,15 @@ export const AppProvider = ({ services, bundledTimetables, children }: AppProvid
         setBusy(false);
       }
     },
-    [services],
+    [services, telemetry],
   );
 
   const store = useMemo<AppStore>(
     () => ({
       services,
+      telemetry,
+      telemetryAvailable: telemetry.isAvailable(),
+      telemetryEnabled,
       phase,
       blockingError,
       activeState,
@@ -173,19 +214,26 @@ export const AppProvider = ({ services, bundledTimetables, children }: AppProvid
       busy,
       notice,
       dismissNotice: () => setNotice(null),
-      startRun: (ref) => guard(() => services.runs.startRun(ref)),
+      startRun: (ref) => guard('run_started', () => services.runs.startRun(ref)),
       advance: (kind) =>
-        guard(async () => {
+        guard(`run_${kind}`, async () => {
           if (!activeState) return null;
-          return services.runs.advance(activeState, kind);
+          const nextState = await services.runs.advance(activeState, kind);
+          if (nextState.status === 'completed') {
+            telemetry.trackEvent('run_completed', {
+              recordedEventCount: nextState.events.length,
+              plannedItemCount: nextState.timetable.items.length,
+            });
+          }
+          return nextState;
         }),
       startNext: () =>
-        guard(async () => {
+        guard('planned_task_started', async () => {
           if (!activeState) return null;
           return services.runs.startNext(activeState);
         }),
       startUnplanned: (label) =>
-        guard(async () => {
+        guard('unplanned_task_started', async () => {
           if (!activeState) return null;
           return services.runs.startUnplanned(activeState, label);
         }),
@@ -203,9 +251,17 @@ export const AppProvider = ({ services, bundledTimetables, children }: AppProvid
             ),
           );
           setNotice(null);
+          telemetry.trackEvent('gap_task_recorded', {
+            durationMs: endedAt.getTime() - startedAt.getTime(),
+          });
           return true;
         } catch (error) {
           const quartz = toQuartzError(error);
+          telemetry.trackException(new Error('Quartz action failed'), {
+            operation: 'gap_task_recorded',
+            errorCode: quartz.code,
+            blocking: isBlockingError(quartz),
+          });
           if (isBlockingError(quartz)) {
             setBlockingError(quartz);
             setPhase('blocked');
@@ -219,27 +275,27 @@ export const AppProvider = ({ services, bundledTimetables, children }: AppProvid
         }
       },
       pause: () =>
-        guard(async () => {
+        guard('run_paused', async () => {
           if (!activeState) return null;
           return services.runs.pause(activeState);
         }),
       resume: () =>
-        guard(async () => {
+        guard('run_resumed', async () => {
           if (!activeState) return null;
           return services.runs.resume(activeState);
         }),
       endPaused: () =>
-        guard(async () => {
+        guard('paused_task_ended', async () => {
           if (!activeState) return null;
           return services.runs.endPaused(activeState);
         }),
       reorderUpcoming: (itemId) =>
-        guard(async () => {
+        guard('upcoming_tasks_reordered', async () => {
           if (!activeState) return null;
           return services.runs.reorderUpcoming(activeState, itemId);
         }),
       undo: () =>
-        guard(async () => {
+        guard('transition_undone', async () => {
           if (!activeState) return null;
           return services.runs.undo(activeState);
         }),
@@ -252,9 +308,17 @@ export const AppProvider = ({ services, bundledTimetables, children }: AppProvid
             await services.runs.editTimeline(activeState.run.id, replacements),
           );
           setNotice(null);
+          telemetry.trackEvent('timeline_edited', {
+            replacementCount: replacements.length,
+          });
           return true;
         } catch (error) {
           const quartz = toQuartzError(error);
+          telemetry.trackException(new Error('Quartz action failed'), {
+            operation: 'timeline_edited',
+            errorCode: quartz.code,
+            blocking: isBlockingError(quartz),
+          });
           if (isBlockingError(quartz)) {
             setBlockingError(quartz);
             setPhase('blocked');
@@ -281,9 +345,18 @@ export const AppProvider = ({ services, bundledTimetables, children }: AppProvid
           setActiveState(null);
           setDayDecision(decision);
           setNotice(null);
+          telemetry.trackEvent('day_skipped', {
+            hadActiveRun: activeState !== null,
+            recordedEventCount: activeState?.events.length ?? 0,
+          });
           return true;
         } catch (error) {
           const quartz = toQuartzError(error);
+          telemetry.trackException(new Error('Quartz action failed'), {
+            operation: 'day_skipped',
+            errorCode: quartz.code,
+            blocking: isBlockingError(quartz),
+          });
           if (isBlockingError(quartz)) {
             setBlockingError(quartz);
             setPhase('blocked');
@@ -306,8 +379,13 @@ export const AppProvider = ({ services, bundledTimetables, children }: AppProvid
           setDayDecision(null);
           setNotice(null);
           await load(false);
+          telemetry.trackEvent('local_data_cleared');
           return true;
         } catch (error) {
+          telemetry.trackException(new Error('Quartz action failed'), {
+            operation: 'local_data_cleared',
+            blocking: true,
+          });
           setBlockingError(toQuartzError(error));
           setPhase('blocked');
           return false;
@@ -316,10 +394,16 @@ export const AppProvider = ({ services, bundledTimetables, children }: AppProvid
           setBusy(false);
         }
       },
+      setTelemetryEnabled: async (enabled) => {
+        await telemetry.setEnabled(enabled);
+        setTelemetryEnabledState(telemetry.isEnabled());
+      },
       reload: () => load(false),
     }),
     [
       services,
+      telemetry,
+      telemetryEnabled,
       phase,
       blockingError,
       activeState,

@@ -1,3 +1,5 @@
+import { useEffect } from 'react';
+
 import { useRoute } from './ui/router';
 import { useApp } from './ui/store';
 import { ActiveRunScreen } from './ui/screens/ActiveRunScreen';
@@ -11,7 +13,11 @@ import { Loading, Screen } from './ui/components/Screen';
 
 export const App = () => {
   const route = useRoute();
-  const { phase, blockingError } = useApp();
+  const { phase, blockingError, telemetry } = useApp();
+
+  useEffect(() => {
+    telemetry.trackPageView(`screen_${route.kind}`);
+  }, [route.kind, telemetry]);
 
   if (phase === 'loading') {
     return (

@@ -3,9 +3,11 @@
 Quartz measures whether a day follows a selected timetable, and which timetable
 items most consistently cause deviation from the plan.
 
-It is a measurement tool, not a task manager or a coach. There is no server, no
-account, and no synchronisation: everything runs in the browser and is stored on
-the device.
+It is a measurement tool, not a task manager or a coach. There is no account or
+synchronisation: plans and recorded days run in the browser and are stored on
+the device. Production builds send anonymous usage, aggregate measurement,
+performance, and error telemetry to Azure Application Insights unless telemetry
+is turned off from the Backup screen.
 
 Quartz ships with two full-day plans: **Gym weekday** and **No-gym weekday**.
 Both are available Monday through Friday in `Asia/Kolkata`; weekends are
@@ -36,6 +38,27 @@ BASE_PATH=/<repo-name>/ npm run build
 `.github/workflows/deploy.yml` verifies, builds with the repository's base path,
 and publishes `dist/` to GitHub Pages. Navigation is hash-based, so a refresh or
 a direct link works from a subpath without any server rewrite rules.
+
+### Observability
+
+The production build supplies the Application Insights connection string to the
+browser bundle. Local development and tests do not configure it, so telemetry is
+a no-op in those environments.
+
+The shared **Quartz telemetry overview** Azure Monitor Workbook is defined in
+`infra/application-insights-workbook.bicep` and queries
+`appi-quartz-prod`. Deploy or update it with:
+
+```bash
+az account set --subscription 598dbc31-fcbe-4cb1-a3d6-16d49d33a5cb
+az deployment group create \
+  --resource-group Quartz \
+  --template-file infra/application-insights-workbook.bicep
+```
+
+The workbook covers anonymous users and sessions, screens, feature events, the
+run lifecycle, exceptions, page performance, application versions, browser and
+device breakdowns, and aggregate report measurements.
 
 ## How it is put together
 
@@ -127,11 +150,20 @@ Quartz never reloads into a new build until the user chooses to apply it.
 
 ## Your data
 
-Data lives only in this browser on this device. Uninstalling the app, clearing
-site data, or losing the device removes anything that has not been exported.
-The Backup screen exports every timetable, run, and event as one versioned JSON
-file, and restores one after validating it completely and asking for explicit
-confirmation. A backup that fails validation changes nothing.
+Timetable names, task names, recorded days, and backups live only in this browser
+on this device. Uninstalling the app, clearing site data, or losing the device
+removes anything that has not been exported. The Backup screen exports every
+timetable, run, and event as one versioned JSON file, and restores one after
+validating it completely and asking for explicit confirmation. A backup that
+fails validation changes nothing.
+
+Production builds use Azure Application Insights for anonymous browser/session
+identifiers, screen views, feature actions, aggregate measurements, performance
+data, app version, device information, and errors. Quartz does not send
+timetable names, task names, backup contents, raw recorded days, or record
+identifiers. Telemetry is on by default and can be turned off from the Backup
+screen; that preference is stored separately from Quartz data and survives
+backup restore and Clear all local data.
 
 The secondary menu also provides **Clear all local data**. It requires destructive
 confirmation, removes all Quartz data on the device, and reloads the bundled

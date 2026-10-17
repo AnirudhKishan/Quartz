@@ -7,6 +7,7 @@ import {
   type AppUpdateStatus,
 } from '../../infrastructure/serviceWorker';
 import { BUILD_ID } from '../../release';
+import { useApp } from '../store';
 
 const messageFor = (status: AppUpdateStatus): string => {
   switch (status) {
@@ -25,8 +26,18 @@ const messageFor = (status: AppUpdateStatus): string => {
 
 export const AppVersionCard = () => {
   const [status, setStatus] = useState<AppUpdateStatus>('idle');
+  const { telemetry } = useApp();
 
-  useEffect(() => subscribeToAppUpdates(setStatus), []);
+  useEffect(
+    () =>
+      subscribeToAppUpdates((nextStatus) => {
+        setStatus(nextStatus);
+        if (nextStatus !== 'idle' && nextStatus !== 'checking') {
+          telemetry.trackEvent('app_update_status', { status: nextStatus });
+        }
+      }),
+    [telemetry],
+  );
 
   return (
     <section className="card">
@@ -36,7 +47,14 @@ export const AppVersionCard = () => {
         {messageFor(status)}
       </p>
       {status === 'update-ready' ? (
-        <button type="button" className="button button--primary" onClick={applyAppUpdate}>
+        <button
+          type="button"
+          className="button button--primary"
+          onClick={() => {
+            telemetry.trackEvent('app_update_applied');
+            applyAppUpdate();
+          }}
+        >
           Apply update
         </button>
       ) : (
@@ -44,7 +62,10 @@ export const AppVersionCard = () => {
           type="button"
           className="button button--secondary"
           disabled={status === 'checking'}
-          onClick={() => void checkForAppUpdate()}
+          onClick={() => {
+            telemetry.trackEvent('app_update_check_requested');
+            void checkForAppUpdate();
+          }}
         >
           Check for updates
         </button>

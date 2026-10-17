@@ -1,0 +1,220 @@
+{
+  "version": "Notebook/1.0",
+  "items": [
+    {
+      "type": 1,
+      "content": {
+        "json": "# Quartz telemetry overview\nAnonymous product usage, reliability, and browser performance from the Quartz GitHub Pages application. User-entered timetable/task names, raw records, route IDs, local dates, exact event timestamps, and backup contents are intentionally excluded."
+      },
+      "name": "workbook-title"
+    },
+    {
+      "type": 9,
+      "content": {
+        "version": "KqlParameterItem/1.0",
+        "parameters": [
+          {
+            "id": "42f50434-5eb1-4aee-8b26-1f1d280cbb35",
+            "version": "KqlParameterItem/1.0",
+            "name": "TimeRange",
+            "type": 4,
+            "isRequired": true,
+            "value": {
+              "durationMs": 604800000
+            },
+            "typeSettings": {
+              "selectableValues": [
+                {
+                  "durationMs": 3600000
+                },
+                {
+                  "durationMs": 14400000
+                },
+                {
+                  "durationMs": 43200000
+                },
+                {
+                  "durationMs": 86400000
+                },
+                {
+                  "durationMs": 172800000
+                },
+                {
+                  "durationMs": 604800000
+                },
+                {
+                  "durationMs": 1209600000
+                },
+                {
+                  "durationMs": 2592000000
+                }
+              ]
+            },
+            "timeContext": {
+              "durationMs": 604800000
+            }
+          }
+        ],
+        "style": "pills",
+        "queryType": 0,
+        "resourceType": "microsoft.insights/components"
+      },
+      "name": "time-range"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "let views = pageViews | where timestamp {TimeRange};\nlet events = customEvents | where timestamp {TimeRange};\nlet failures = exceptions | where timestamp {TimeRange};\nunion\n  (views | summarize Value=dcount(user_Id) | extend Metric='Active users'),\n  (views | summarize Value=dcount(session_Id) | extend Metric='Sessions'),\n  (views | summarize Value=count() | extend Metric='Screen views'),\n  (events | summarize Value=count() | extend Metric='Feature events'),\n  (failures | summarize Value=count() | extend Metric='Exceptions')\n| project Metric, Value",
+        "size": 4,
+        "title": "Overview",
+        "queryType": 0,
+        "resourceType": "microsoft.insights/components",
+        "visualization": "tiles",
+        "tileSettings": {
+          "titleContent": {
+            "columnMatch": "Metric",
+            "formatter": 1
+          },
+          "leftContent": {
+            "columnMatch": "Value",
+            "formatter": 12,
+            "formatOptions": {
+              "palette": "auto"
+            },
+            "numberFormat": {
+              "unit": 17,
+              "options": {
+                "maximumSignificantDigits": 4,
+                "maximumFractionDigits": 0
+              }
+            }
+          },
+          "showBorder": true
+        }
+      },
+      "name": "overview-tiles"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "pageViews\n| where timestamp {TimeRange}\n| extend Screen=replace_string(name, 'screen_', '')\n| summarize Views=count(), Users=dcount(user_Id), Sessions=dcount(session_Id) by Screen\n| order by Views desc",
+        "size": 0,
+        "title": "Screens",
+        "queryType": 0,
+        "resourceType": "microsoft.insights/components",
+        "visualization": "table"
+      },
+      "name": "screen-views"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "customEvents\n| where timestamp {TimeRange}\n| summarize Events=count(), Users=dcount(user_Id), Sessions=dcount(session_Id) by name\n| order by Events desc",
+        "size": 0,
+        "title": "Feature events",
+        "queryType": 0,
+        "resourceType": "microsoft.insights/components",
+        "visualization": "table"
+      },
+      "name": "feature-events"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "let stages = datatable(EventName:string, Stage:string, Sort:int) [\n  'app_ready', 'App ready', 1,\n  'run_started', 'Run started', 2,\n  'run_completed', 'Run completed', 3,\n  'run_report_viewed', 'Day report viewed', 4\n];\ncustomEvents\n| where timestamp {TimeRange}\n| where name in (stages | project EventName)\n| summarize Users=dcount(user_Id), Sessions=dcount(session_Id), Events=count() by name\n| join kind=rightouter stages on $left.name == $right.EventName\n| project Stage, Users=coalesce(Users, 0), Sessions=coalesce(Sessions, 0), Events=coalesce(Events, 0), Sort\n| order by Sort asc\n| project-away Sort",
+        "size": 0,
+        "title": "Run lifecycle funnel",
+        "queryType": 0,
+        "resourceType": "microsoft.insights/components",
+        "visualization": "table"
+      },
+      "name": "run-funnel"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "exceptions\n| where timestamp {TimeRange}\n| extend Operation=tostring(customDimensions['operation']), ErrorCode=tostring(customDimensions['errorCode']), AppVersion=tostring(customDimensions['appVersion']), Build=tostring(customDimensions['buildSha'])\n| summarize Count=count(), Users=dcount(user_Id), LastSeen=max(timestamp) by type, outerMessage, Operation, ErrorCode, AppVersion, Build\n| order by Count desc",
+        "size": 0,
+        "title": "Exceptions and handled failures",
+        "queryType": 0,
+        "resourceType": "microsoft.insights/components",
+        "visualization": "table"
+      },
+      "name": "exceptions"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "pageViews\n| where timestamp {TimeRange}\n| summarize P50=percentile(duration, 50), P95=percentile(duration, 95), Views=count() by bin(timestamp, 1h)\n| order by timestamp asc",
+        "size": 0,
+        "title": "Page performance",
+        "queryType": 0,
+        "resourceType": "microsoft.insights/components",
+        "visualization": "timechart"
+      },
+      "name": "page-performance"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "union pageViews, customEvents, exceptions\n| where timestamp {TimeRange}\n| extend AppVersion=tostring(customDimensions['appVersion']), Build=tostring(customDimensions['buildSha'])\n| summarize Telemetry=count(), Users=dcount(user_Id), Sessions=dcount(session_Id) by AppVersion, Build\n| order by Telemetry desc",
+        "size": 0,
+        "title": "Application versions",
+        "queryType": 0,
+        "resourceType": "microsoft.insights/components",
+        "visualization": "table"
+      },
+      "name": "versions"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "pageViews\n| where timestamp {TimeRange}\n| summarize Views=count(), Users=dcount(user_Id), Sessions=dcount(session_Id) by client_Type, client_OS, client_Browser\n| order by Views desc",
+        "size": 0,
+        "title": "Browsers, operating systems, and devices",
+        "queryType": 0,
+        "resourceType": "microsoft.insights/components",
+        "visualization": "table"
+      },
+      "name": "clients"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "customEvents\n| where timestamp {TimeRange}\n| where name in ('reports_overview_viewed', 'run_report_viewed', 'aggregate_report_viewed')\n| extend TotalOverrunMs=todouble(customDimensions['totalOverrunMs']), SkipRate=todouble(customDimensions['skipRate']), TotalBetweenTasksMs=todouble(customDimensions['totalBetweenTasksMs']), TotalInsertedDurationMs=todouble(customDimensions['totalInsertedDurationMs'])\n| summarize Views=count(), AvgOverrunMinutes=avg(TotalOverrunMs) / 60000.0, AvgSkipRate=avg(SkipRate), AvgBetweenTasksMinutes=avg(TotalBetweenTasksMs) / 60000.0, AvgUnplannedMinutes=avg(TotalInsertedDurationMs) / 60000.0 by name",
+        "size": 0,
+        "title": "Aggregate report usage and measurements",
+        "queryType": 0,
+        "resourceType": "microsoft.insights/components",
+        "visualization": "table"
+      },
+      "name": "report-aggregates"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "union\n  (pageViews | where timestamp {TimeRange} | summarize Count=count() by bin(timestamp, 1h) | extend Signal='Screen views'),\n  (customEvents | where timestamp {TimeRange} | summarize Count=count() by bin(timestamp, 1h) | extend Signal='Feature events'),\n  (exceptions | where timestamp {TimeRange} | summarize Count=count() by bin(timestamp, 1h) | extend Signal='Exceptions')\n| order by timestamp asc",
+        "size": 0,
+        "title": "Telemetry trend",
+        "queryType": 0,
+        "resourceType": "microsoft.insights/components",
+        "visualization": "timechart"
+      },
+      "name": "telemetry-trend"
+    }
+  ],
+  "fallbackResourceIds": [
+    "/subscriptions/598dbc31-fcbe-4cb1-a3d6-16d49d33a5cb/resourceGroups/Quartz/providers/microsoft.insights/components/appi-quartz-prod"
+  ],
+  "$schema": "https://github.com/Microsoft/Application-Insights-Workbooks/blob/master/schema/workbook.json"
+}

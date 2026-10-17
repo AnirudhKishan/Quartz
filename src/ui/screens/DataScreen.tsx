@@ -30,9 +30,18 @@ const readText = (file: File): Promise<string> =>
       });
 
 export const DataScreen = () => {
-  const { services, activeState, reload } = useApp();
+  const {
+    services,
+    activeState,
+    reload,
+    telemetry,
+    telemetryAvailable,
+    telemetryEnabled,
+    setTelemetryEnabled,
+  } = useApp();
   const [status, setStatus] = useState<Status>({ kind: 'idle' });
   const [working, setWorking] = useState(false);
+  const [telemetryWorking, setTelemetryWorking] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
 
   const exportBackup = async () => {
@@ -46,7 +55,9 @@ export const DataScreen = () => {
       anchor.click();
       URL.revokeObjectURL(url);
       setStatus({ kind: 'idle' });
+      telemetry.trackEvent('backup_exported');
     } catch (error) {
+      telemetry.trackException(new Error('Backup export failed'), { operation: 'backup_exported' });
       setStatus({ kind: 'error', ...describe(error) });
     } finally {
       setWorking(false);
@@ -57,12 +68,22 @@ export const DataScreen = () => {
   const choose = async (file: File) => {
     setWorking(true);
     try {
+      const preview = services.backups.preview(await readText(file));
       setStatus({
         kind: 'confirm',
-        preview: services.backups.preview(await readText(file)),
+        preview,
         fileName: file.name,
       });
+      telemetry.trackEvent('backup_validated', {
+        timetableCount: preview.timetableCount,
+        runCount: preview.runCount,
+        eventCount: preview.eventCount,
+        hasActiveRun: preview.hasActiveRun,
+      });
     } catch (error) {
+      telemetry.trackException(new Error('Backup validation failed'), {
+        operation: 'backup_validated',
+      });
       setStatus({ kind: 'error', ...describe(error) });
     } finally {
       setWorking(false);
@@ -76,29 +97,77 @@ export const DataScreen = () => {
       await services.backups.restore(preview);
       await reload();
       setStatus({ kind: 'restored' });
+      telemetry.trackEvent('backup_restored', {
+        timetableCount: preview.timetableCount,
+        runCount: preview.runCount,
+        eventCount: preview.eventCount,
+        hasActiveRun: preview.hasActiveRun,
+      });
     } catch (error) {
+      telemetry.trackException(new Error('Backup restore failed'), {
+        operation: 'backup_restored',
+      });
       setStatus({ kind: 'error', ...describe(error) });
     } finally {
       setWorking(false);
     }
   };
 
+  const toggleTelemetry = async () => {
+    setTelemetryWorking(true);
+    try {
+      await setTelemetryEnabled(!telemetryEnabled);
+    } finally {
+      setTelemetryWorking(false);
+    }
+  };
+
   return (
     <Screen
       title="Backup"
-      subtitle="Your data stays on this device. Export it to keep a copy."
+      subtitle="Your plans and recorded days stay on this device. Export them to keep a copy."
       back={{ label: 'Timetables', route: { kind: 'select' } }}
     >
       <section className="card">
         <h2 className="card__title">Where your data lives</h2>
         <p className="card__warning" role="note">
-          Quartz keeps everything in this browser&apos;s storage on this device only. Uninstalling
-          the app, clearing browser storage or site data, or losing the device will remove any data
-          that has not been exported. Exported backups are the only copies.
+          Quartz keeps timetable names, task names, recorded days, and backups in this
+          browser&apos;s storage on this device only. Uninstalling the app, clearing browser storage
+          or site data, or losing the device will remove any data that has not been exported.
+          Exported backups are the only copies.
         </p>
       </section>
 
       <AppVersionCard />
+
+      <section className="card">
+        <h2 className="card__title">Anonymous telemetry</h2>
+        <p className="card__meta">
+          {telemetryAvailable
+            ? `Telemetry is ${telemetryEnabled ? 'on' : 'off'}.`
+            : 'Telemetry is unavailable in this build.'}
+        </p>
+        <p className="card__warning" role="note">
+          When on, Quartz sends anonymous browser and session identifiers, screen views, feature
+          actions, aggregate measurements, performance data, app version, device information, and
+          errors to Azure Application Insights. It does not send timetable names, task names,
+          backup contents, raw recorded days, or record identifiers.
+        </p>
+        {telemetryAvailable && (
+          <button
+            type="button"
+            className={telemetryEnabled ? 'button button--secondary' : 'button button--primary'}
+            disabled={telemetryWorking}
+            onClick={() => void toggleTelemetry()}
+          >
+            {telemetryEnabled ? 'Turn telemetry off' : 'Turn telemetry on'}
+          </button>
+        )}
+        <p className="card__meta">
+          This preference is kept separately and is not changed by restoring or clearing Quartz
+          data.
+        </p>
+      </section>
 
       <section className="card">
         <h2 className="card__title">Export</h2>

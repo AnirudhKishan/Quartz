@@ -11,6 +11,7 @@ import { QuartzError } from '../domain/errors';
 import { parseTimetable } from '../domain/timetable';
 import type { Timetable } from '../domain/types';
 import { InMemoryRepository } from '../infrastructure/memoryRepository';
+import type { Telemetry } from '../infrastructure/telemetry';
 import { BUILD_ID } from '../release';
 import { simpleTimetable } from '../test/fixtures';
 import { simpleTimetableV2 } from '../test/fixtures';
@@ -37,6 +38,7 @@ const setup = (
     clock?: MovableClock;
     hash?: string;
     timetables?: readonly Timetable[];
+    telemetry?: Telemetry;
   } = {},
 ) => {
   window.location.hash = overrides.hash ?? '#/';
@@ -46,7 +48,11 @@ const setup = (
   const services: Services = createServices(repository, clock);
 
   render(
-    <AppProvider services={services} bundledTimetables={overrides.timetables ?? [simpleTimetable]}>
+    <AppProvider
+      services={services}
+      bundledTimetables={overrides.timetables ?? [simpleTimetable]}
+      telemetry={overrides.telemetry}
+    >
       <App />
     </AppProvider>,
   );
@@ -65,6 +71,27 @@ afterEach(() => {
 });
 
 describe('selection screen', () => {
+  it('tracks sanitized screens and successful feature actions', async () => {
+    const telemetry: Telemetry = {
+      isAvailable: () => true,
+      isEnabled: () => true,
+      setEnabled: vi.fn(async () => undefined),
+      trackPageView: vi.fn(),
+      trackEvent: vi.fn(),
+      trackMetric: vi.fn(),
+      trackException: vi.fn(),
+    };
+    setup({ telemetry });
+
+    await screen.findByRole('heading', { name: 'Test plan' });
+    await user().click(screen.getByRole('button', { name: 'Start day' }));
+
+    await waitFor(() =>
+      expect(telemetry.trackPageView).toHaveBeenCalledWith('screen_run'),
+    );
+    expect(telemetry.trackEvent).toHaveBeenCalledWith('run_started', {});
+  });
+
   it('lists the available plan without exposing its internal version and starts a day', async () => {
     setup();
 
@@ -661,6 +688,34 @@ describe('recovery', () => {
 });
 
 describe('backup', () => {
+  it('discloses anonymous telemetry and persists the user control outside app data', async () => {
+    let enabled = true;
+    const setEnabled = vi.fn(async (next: boolean) => {
+      enabled = next;
+    });
+    const telemetry: Telemetry = {
+      isAvailable: () => true,
+      isEnabled: () => enabled,
+      setEnabled,
+      trackPageView: vi.fn(),
+      trackEvent: vi.fn(),
+      trackMetric: vi.fn(),
+      trackException: vi.fn(),
+    };
+    setup({ hash: '#/data', telemetry });
+
+    expect(await screen.findByText('Telemetry is on.')).toBeVisible();
+    expect(
+      screen.getByText(/It does not send timetable names, task names, backup contents/),
+    ).toBeVisible();
+
+    await user().click(screen.getByRole('button', { name: 'Turn telemetry off' }));
+
+    expect(setEnabled).toHaveBeenCalledWith(false);
+    expect(await screen.findByText('Telemetry is off.')).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Turn telemetry on' })).toBeVisible();
+  });
+
   it('warns about data loss and only replaces data after an explicit confirmation', async () => {
     setup({ hash: '#/data' });
 

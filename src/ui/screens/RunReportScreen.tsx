@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 import { buildRunReport } from '../../domain/analysis';
 import type { TimelineEventReplacement } from '../../domain/types';
@@ -28,7 +28,7 @@ interface SelectedGap extends TimelineGap {
 }
 
 export const RunReportScreen = ({ runId }: { readonly runId: string }) => {
-  const { services } = useApp();
+  const { services, telemetry } = useApp();
   const [reloadKey, setReloadKey] = useState(0);
   const [selectedActivity, setSelectedActivity] = useState<SelectedActivity | null>(null);
   const [selectedGap, setSelectedGap] = useState<SelectedGap | null>(null);
@@ -44,6 +44,23 @@ export const RunReportScreen = ({ runId }: { readonly runId: string }) => {
     },
     [services, runId, reloadKey],
   );
+
+  useEffect(() => {
+    if (data.status !== 'ready') return;
+    const { report } = data.value;
+    telemetry.trackEvent('run_report_viewed', {
+      reachedCount: report.reachedCount,
+      measuredCount: report.measuredCount,
+      skippedCount: report.skippedCount,
+      skipRate: report.skipRate,
+      dayStartDeviationMs: report.dayStartDeviationMs,
+      finalCompletionDeviationMs: report.finalCompletionDeviationMs,
+      totalOverrunMs: report.totalPositiveDurationDeviationMs,
+      totalBetweenTasksMs: report.totalBetweenTasksMs,
+      totalInsertedDurationMs: report.totalInsertedDurationMs,
+      reordered: report.reordered,
+    });
+  }, [data, telemetry]);
 
   if (data.status === 'loading') {
     return (
@@ -67,8 +84,14 @@ export const RunReportScreen = ({ runId }: { readonly runId: string }) => {
     try {
       await services.runs.editTimeline(runId, replacements);
       setReloadKey((value) => value + 1);
+      telemetry.trackEvent('report_timeline_edited', {
+        replacementCount: replacements.length,
+      });
       return true;
     } catch (error) {
+      telemetry.trackException(new Error('Report timeline edit failed'), {
+        operation: 'report_timeline_edited',
+      });
       setSaveError(error instanceof Error ? error : new Error(String(error)));
       return false;
     } finally {
@@ -179,8 +202,14 @@ export const RunReportScreen = ({ runId }: { readonly runId: string }) => {
                 selectedGap.end,
               );
               setReloadKey((value) => value + 1);
+              telemetry.trackEvent('report_gap_task_recorded', {
+                durationMs: selectedGap.end.getTime() - selectedGap.start.getTime(),
+              });
               return true;
             } catch (error) {
+              telemetry.trackException(new Error('Report gap task failed'), {
+                operation: 'report_gap_task_recorded',
+              });
               setSaveError(error instanceof Error ? error : new Error(String(error)));
               return false;
             } finally {

@@ -13,11 +13,23 @@ import { EmptyState, ErrorNote, Loading, Screen } from '../components/Screen';
  * the day to deviate, ranked by total overrun across every completed day.
  */
 export const TimetableReportScreen = ({ timetableId }: { readonly timetableId: string }) => {
-  const { services } = useApp();
+  const { services, telemetry } = useApp();
   const report = useAsync(
     () => services.reports.loadAggregateReport(timetableId),
     [services, timetableId],
   );
+
+  useEffect(() => {
+    if (report.status !== 'ready') return;
+    telemetry.trackEvent('aggregate_report_viewed', {
+      runCount: report.value.runCount,
+      itemCount: report.value.items.length,
+      versionCount: report.value.versions.length,
+      medianDayStartDeviationMs: report.value.medianDayStartDeviationMs,
+      medianFinalCompletionDeviationMs: report.value.medianFinalCompletionDeviationMs,
+      totalOverrunMs: report.value.totalPositiveDurationDeviationMs,
+    });
+  }, [report, telemetry]);
 
   if (report.status === 'loading') {
     return (
@@ -105,3 +117,4 @@ export const TimetableReportScreen = ({ timetableId }: { readonly timetableId: s
     </Screen>
   );
 };
+import { useEffect } from 'react';
