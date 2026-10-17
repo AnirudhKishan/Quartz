@@ -56,6 +56,27 @@ az deployment group create \
   --template-file infra/application-insights-workbook.bicep
 ```
 
+From Azure Cloud Shell, clone the repository first. For an existing Cloud Shell
+checkout, switch back to `main` and pull the latest workbook definition before
+deploying:
+
+```bash
+git clone https://github.com/AnirudhKishan/Quartz.git
+cd Quartz
+
+# On later deployments, start here from the existing Quartz directory.
+git switch main
+git pull --ff-only origin main
+
+az account set --subscription 598dbc31-fcbe-4cb1-a3d6-16d49d33a5cb
+az deployment group create \
+  --resource-group Quartz \
+  --template-file infra/application-insights-workbook.bicep
+```
+
+Close and reopen an already-open workbook after deployment so the Azure portal
+loads the updated serialized definition.
+
 The workbook covers anonymous users and sessions, screens, feature events, the
 run lifecycle, exceptions, page performance, application versions, browser and
 device breakdowns, and aggregate report measurements.
