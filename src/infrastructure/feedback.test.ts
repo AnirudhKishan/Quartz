@@ -45,6 +45,7 @@ class FakeAudioContext {
   currentTime = 1;
   destination = {};
   oscillators: FakeOscillator[] = [];
+  gains: FakeGain[] = [];
   resume = vi.fn(async () => {
     this.state = 'running';
   });
@@ -56,7 +57,11 @@ class FakeAudioContext {
     this.oscillators.push(oscillator);
     return oscillator;
   });
-  createGain = vi.fn(() => new FakeGain());
+  createGain = vi.fn(() => {
+    const gain = new FakeGain();
+    this.gains.push(gain);
+    return gain;
+  });
 }
 
 class FakeDocument {
@@ -145,6 +150,18 @@ describe('browser feedback', () => {
     expect(audio.resume).toHaveBeenCalledOnce();
     expect(vibrate).toHaveBeenCalledWith([18]);
     expect(audio.createOscillator).toHaveBeenCalledOnce();
+  });
+
+  it('uses an audible but bounded peak gain', async () => {
+    const { feedback, audio } = createHarness();
+    await feedback.prepare();
+
+    feedback.play('success', 'sound');
+
+    expect(audio.gains[0]?.gain.exponentialRampToValueAtTime).toHaveBeenCalledWith(
+      0.16,
+      1.008,
+    );
   });
 
   it('schedules a cue immediately while mobile audio is still resuming', () => {

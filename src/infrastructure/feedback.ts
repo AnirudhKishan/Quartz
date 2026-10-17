@@ -79,7 +79,7 @@ interface ActiveSound {
 const STORAGE_KEY = 'quartz.feedback.preferences';
 const DEFAULT_PREFERENCES: FeedbackPreferences = { haptics: true, sound: true };
 const SILENT_GAIN = 0.0001;
-const PEAK_GAIN = 0.06;
+const PEAK_GAIN = 0.16;
 
 const HAPTIC_PATTERNS: Record<FeedbackCue, number | readonly number[]> = {
   success: 18,
