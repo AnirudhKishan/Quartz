@@ -79,7 +79,7 @@ interface ActiveSound {
 const STORAGE_KEY = 'quartz.feedback.preferences';
 const DEFAULT_PREFERENCES: FeedbackPreferences = { haptics: true, sound: true };
 const SILENT_GAIN = 0.0001;
-const PEAK_GAIN = 0.035;
+const PEAK_GAIN = 0.06;
 
 const HAPTIC_PATTERNS: Record<FeedbackCue, number | readonly number[]> = {
   success: 18,
@@ -106,7 +106,14 @@ const TONES: Record<FeedbackCue, readonly Tone[]> = {
 };
 
 const defaultAudioContextFactory = (): AudioContextLike => {
-  const AudioContextConstructor = window.AudioContext;
+  const AudioContextConstructor =
+    window.AudioContext ??
+    (
+      window as typeof window & {
+        webkitAudioContext?: typeof AudioContext;
+      }
+    ).webkitAudioContext;
+  if (!AudioContextConstructor) throw new Error('Web Audio is unavailable.');
   return new AudioContextConstructor();
 };
 
@@ -283,7 +290,19 @@ class BrowserFeedback implements Feedback {
     }
     const context = this.getAudioContext();
     if (!context) return;
-    if (context.state !== 'running') {
+    if (context.state === 'closed') {
+      this.update({ soundIssue: 'Sound feedback is unavailable in this browser.' });
+      return;
+    }
+    if (context.state === 'suspended') {
+      void context.resume().then(
+        () => this.update({ soundIssue: null }),
+        () =>
+          this.update({
+            soundIssue: 'Sound is blocked by the browser. Tap Preview sound to try again.',
+          }),
+      );
+    } else if (context.state !== 'running') {
       if (!this.snapshot.soundIssue) {
         this.update({
           soundIssue: 'Sound is waiting for browser permission. Tap Preview sound to try again.',
@@ -407,7 +426,13 @@ export const createFeedback = (options: FeedbackOptions = {}): Feedback => {
       (typeof window === 'undefined' ? undefined : window.navigator),
     audioContextFactory:
       options.audioContextFactory ??
-      (typeof window !== 'undefined' && typeof window.AudioContext === 'function'
+      (typeof window !== 'undefined' &&
+      (typeof window.AudioContext === 'function' ||
+        typeof (
+          window as typeof window & {
+            webkitAudioContext?: typeof AudioContext;
+          }
+        ).webkitAudioContext === 'function')
         ? defaultAudioContextFactory
         : undefined),
     document:

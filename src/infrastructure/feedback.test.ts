@@ -147,6 +147,27 @@ describe('browser feedback', () => {
     expect(audio.createOscillator).toHaveBeenCalledOnce();
   });
 
+  it('schedules a cue immediately while mobile audio is still resuming', () => {
+    const { feedback, audio } = createHarness();
+    let finishResume: (() => void) | undefined;
+    audio.resume.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finishResume = () => {
+            audio.state = 'running';
+            resolve();
+          };
+        }),
+    );
+
+    void feedback.prepare();
+    feedback.play('complete', 'sound');
+
+    expect(audio.resume).toHaveBeenCalled();
+    expect(audio.createOscillator).toHaveBeenCalledTimes(3);
+    finishResume?.();
+  });
+
   it.each<FeedbackCue>(['success', 'complete', 'undo', 'error'])(
     'uses a bounded cue for %s',
     async (cue) => {
@@ -220,14 +241,18 @@ describe('browser feedback', () => {
     });
   });
 
-  it('reports audio permission failures without replaying a queued cue', async () => {
+  it('reports audio permission failures without replaying a cue later', async () => {
     const { feedback, audio } = createHarness();
-    audio.resume.mockRejectedValueOnce(new Error('blocked'));
+    audio.resume.mockRejectedValue(new Error('blocked'));
 
     await feedback.prepare();
     feedback.play('success');
+    await Promise.resolve();
+    const scheduled = audio.createOscillator.mock.calls.length;
 
     expect(feedback.getSnapshot().soundIssue).toMatch(/blocked/);
-    expect(audio.createOscillator).not.toHaveBeenCalled();
+    expect(scheduled).toBe(1);
+    await Promise.resolve();
+    expect(audio.createOscillator).toHaveBeenCalledTimes(scheduled);
   });
 });

@@ -14,7 +14,8 @@ export const SettingsScreen = () => {
     : { label: 'Timetables', route: { kind: 'select' as const } };
 
   const previewSound = () => {
-    void feedback.prepare().then(() => feedback.play('success', 'sound'));
+    void feedback.prepare();
+    feedback.play('complete', 'sound');
   };
 
   return (

@@ -220,7 +220,7 @@ describe('feedback settings', () => {
 
     expect(play).toHaveBeenCalledWith('success', 'haptics');
     expect(prepare).toHaveBeenCalledOnce();
-    expect(play).toHaveBeenCalledWith('success', 'sound');
+    expect(play).toHaveBeenCalledWith('complete', 'sound');
   });
 });
 

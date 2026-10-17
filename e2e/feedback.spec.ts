@@ -47,7 +47,7 @@ test('@feedback persists settings and confirms a run action without noisy naviga
     }
 
     class FakeAudioContext {
-      state: AudioContextState = 'running';
+      state: AudioContextState = 'suspended';
       currentTime = 0;
       destination = {};
       createOscillator(): FakeOscillator {
@@ -56,7 +56,9 @@ test('@feedback persists settings and confirms a run action without noisy naviga
       createGain(): FakeGain {
         return new FakeGain();
       }
-      async resume(): Promise<void> {}
+      async resume(): Promise<void> {
+        this.state = 'running';
+      }
       async close(): Promise<void> {
         this.state = 'closed';
       }
