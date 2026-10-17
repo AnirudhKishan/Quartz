@@ -314,132 +314,207 @@ export const median = (values: readonly number[]): number | null => {
   return (lower + upper) / 2;
 };
 
-export interface ItemAggregate {
+export const nearestRankPercentile = (
+  values: readonly number[],
+  percentile: number,
+): number | null => {
+  if (values.length === 0) return null;
+  if (percentile <= 0 || percentile > 1) {
+    throw new Error('Percentile must be greater than 0 and at most 1.');
+  }
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.ceil(percentile * sorted.length) - 1] ?? null;
+};
+
+export type BudgetEvidenceState = 'measured' | 'skipped' | 'unmeasured';
+
+export interface BudgetEvidence {
+  readonly runId: string;
+  readonly localDate: string;
+  readonly plannedDurationMs: number;
+  readonly actualDurationMs: number | null;
+  readonly state: BudgetEvidenceState;
+}
+
+export type BudgetReviewStatus =
+  | 'review-budget'
+  | 'consider-buffer'
+  | 'no-increase'
+  | 'insufficient-evidence'
+  | 'variable-plan';
+
+export interface BudgetReviewItem {
   readonly itemId: string;
   readonly label: string;
-  /** Non-skipped observations with a measurable duration. */
-  readonly observations: number;
-  readonly medianStartDeviationMs: number | null;
-  readonly medianDurationDeviationMs: number | null;
-  readonly totalPositiveDurationDeviationMs: number;
+  readonly timetableIndex: number;
+  readonly status: BudgetReviewStatus;
+  readonly plannedDurationMs: number | null;
+  readonly minimumPlannedDurationMs: number;
+  readonly maximumPlannedDurationMs: number;
+  readonly measuredCount: number;
   readonly skipCount: number;
-  readonly skipRate: number;
+  readonly unmeasuredCount: number;
+  readonly typicalDurationMs: number | null;
+  readonly roomierDurationMs: number | null;
+  readonly typicalSuggestedBudgetMs: number | null;
+  readonly roomierSuggestedBudgetMs: number | null;
+  readonly overBudgetCount: number;
+  readonly evidence: readonly BudgetEvidence[];
 }
 
-export interface AggregateReport {
-  readonly timetableId: string;
-  readonly timetableName: string;
-  readonly runCount: number;
-  readonly versions: readonly number[];
-  /** Ranked by total positive duration deviation, descending. */
-  readonly items: readonly ItemAggregate[];
-  readonly totalPositiveDurationDeviationMs: number;
-  readonly medianDayStartDeviationMs: number | null;
-  readonly medianFinalCompletionDeviationMs: number | null;
+export interface TimeBudgetAnalysis {
+  readonly items: readonly BudgetReviewItem[];
 }
 
-interface Bucket {
-  label: string;
-  latestVersion: number;
-  startDeviations: number[];
-  durationDeviations: number[];
-  totalPositive: number;
-  skipCount: number;
-  firstSeenIndex: number;
-}
+const MINIMUM_MEASUREMENTS = 5;
+const ACTIONABLE_DIFFERENCE_MS = 60_000;
+const roundBudgetUp = (durationMs: number): number =>
+  Math.ceil(durationMs / 60_000) * 60_000;
+
+const statusPriority: Record<BudgetReviewStatus, number> = {
+  'review-budget': 0,
+  'consider-buffer': 1,
+  'no-increase': 2,
+  'insufficient-evidence': 3,
+  'variable-plan': 4,
+};
 
 /**
- * Combine runs of the same timetable ID, grouped by stable item ID so an item
- * keeps its history across timetable versions.
+ * Compare active durations from already-selected, same-version reports with
+ * that version's resolved planned durations.
  */
-export const buildAggregateReport = (
-  timetableId: string,
-  timetableName: string,
+export const buildTimeBudgetAnalysis = (
+  timetable: Timetable,
   reports: readonly RunReport[],
-): AggregateReport => {
-  const buckets = new Map<string, Bucket>();
-  const versions = new Set<number>();
-
-  reports.forEach((report) => {
-    versions.add(report.timetable.version);
-    report.observations.forEach((observation) => {
-      if (!observation.reached) return;
-
-      let bucket = buckets.get(observation.item.id);
-      if (!bucket) {
-        bucket = {
-          label: observation.item.label,
-          latestVersion: observation.timetableVersion,
-          startDeviations: [],
-          durationDeviations: [],
-          totalPositive: 0,
-          skipCount: 0,
-          firstSeenIndex: observation.index,
-        };
-        buckets.set(observation.item.id, bucket);
+): TimeBudgetAnalysis => {
+  const items = timetable.items.map((item, timetableIndex): BudgetReviewItem => {
+    const evidence: BudgetEvidence[] = reports.map((report) => {
+      const observation = report.observations.find((entry) => entry.item.id === item.id);
+      if (!observation) {
+        throw new Error(`Report ${report.run.id} has no observation for ${item.id}.`);
       }
-
-      // The newest version wins the display label.
-      if (observation.timetableVersion >= bucket.latestVersion) {
-        bucket.latestVersion = observation.timetableVersion;
-        bucket.label = observation.item.label;
-      }
-
-      if (observation.skipped) {
-        bucket.skipCount += 1;
-        return;
-      }
-      if (observation.startDeviationMs !== null) {
-        bucket.startDeviations.push(observation.startDeviationMs);
-      }
-      if (observation.durationDeviationMs !== null) {
-        bucket.durationDeviations.push(observation.durationDeviationMs);
-        bucket.totalPositive += observation.positiveDurationDeviationMs;
-      }
+      return {
+        runId: report.run.id,
+        localDate: report.run.localDate,
+        plannedDurationMs: observation.plannedDurationMs,
+        actualDurationMs: observation.actualDurationMs,
+        state: observation.skipped
+          ? 'skipped'
+          : observation.actualDurationMs === null
+            ? 'unmeasured'
+            : 'measured',
+      };
     });
-  });
+    const measured = evidence.filter(
+      (entry): entry is BudgetEvidence & { actualDurationMs: number } =>
+        entry.state === 'measured' && entry.actualDurationMs !== null,
+    );
+    const durations = measured.map((entry) => entry.actualDurationMs);
+    const plannedDurations = [...new Set(evidence.map((entry) => entry.plannedDurationMs))];
+    const fallbackPlan = computePlannedSchedule(timetable, '2000-01-03')[timetableIndex];
+    const minimumPlannedDurationMs = Math.min(
+      ...(plannedDurations.length > 0
+        ? plannedDurations
+        : [fallbackPlan?.plannedDurationMs ?? 0]),
+    );
+    const maximumPlannedDurationMs = Math.max(
+      ...(plannedDurations.length > 0
+        ? plannedDurations
+        : [fallbackPlan?.plannedDurationMs ?? 0]),
+    );
+    const plannedDurationMs =
+      minimumPlannedDurationMs === maximumPlannedDurationMs
+        ? minimumPlannedDurationMs
+        : null;
+    const typicalDurationMs = median(durations);
+    const roomierDurationMs = nearestRankPercentile(durations, 0.75);
+    const hasEnoughEvidence = measured.length >= MINIMUM_MEASUREMENTS;
+    const typicalIncrease =
+      plannedDurationMs !== null && typicalDurationMs !== null
+        ? typicalDurationMs - plannedDurationMs
+        : null;
+    const roomierIncrease =
+      plannedDurationMs !== null && roomierDurationMs !== null
+        ? roomierDurationMs - plannedDurationMs
+        : null;
 
-  const items: ItemAggregate[] = [...buckets.entries()].map(([itemId, bucket]) => {
-    const observations = bucket.durationDeviations.length;
-    const denominator = observations + bucket.skipCount;
+    let status: BudgetReviewStatus;
+    if (plannedDurationMs === null) status = 'variable-plan';
+    else if (!hasEnoughEvidence) status = 'insufficient-evidence';
+    else if ((typicalIncrease ?? -Infinity) >= ACTIONABLE_DIFFERENCE_MS) {
+      status = 'review-budget';
+    } else if ((roomierIncrease ?? -Infinity) >= ACTIONABLE_DIFFERENCE_MS) {
+      status = 'consider-buffer';
+    } else {
+      status = 'no-increase';
+    }
+
     return {
-      itemId,
-      label: bucket.label,
-      observations,
-      medianStartDeviationMs: median(bucket.startDeviations),
-      medianDurationDeviationMs: median(bucket.durationDeviations),
-      totalPositiveDurationDeviationMs: bucket.totalPositive,
-      skipCount: bucket.skipCount,
-      skipRate: denominator === 0 ? 0 : bucket.skipCount / denominator,
+      itemId: item.id,
+      label: item.label,
+      timetableIndex,
+      status,
+      plannedDurationMs,
+      minimumPlannedDurationMs,
+      maximumPlannedDurationMs,
+      measuredCount: measured.length,
+      skipCount: evidence.filter((entry) => entry.state === 'skipped').length,
+      unmeasuredCount: evidence.filter((entry) => entry.state === 'unmeasured').length,
+      typicalDurationMs,
+      roomierDurationMs,
+      typicalSuggestedBudgetMs:
+        hasEnoughEvidence &&
+        plannedDurationMs !== null &&
+        typicalDurationMs !== null &&
+        typicalDurationMs - plannedDurationMs >= ACTIONABLE_DIFFERENCE_MS
+          ? roundBudgetUp(typicalDurationMs)
+          : null,
+      roomierSuggestedBudgetMs:
+        hasEnoughEvidence &&
+        plannedDurationMs !== null &&
+        roomierDurationMs !== null &&
+        roomierDurationMs - plannedDurationMs >= ACTIONABLE_DIFFERENCE_MS
+          ? roundBudgetUp(roomierDurationMs)
+          : null,
+      overBudgetCount: measured.filter(
+        (entry) => entry.actualDurationMs - entry.plannedDurationMs >= ACTIONABLE_DIFFERENCE_MS,
+      ).length,
+      evidence,
     };
   });
 
-  // "Steps causing deviation": items that repeatedly overrun rank highest.
   items.sort((a, b) => {
-    if (b.totalPositiveDurationDeviationMs !== a.totalPositiveDurationDeviationMs) {
-      return b.totalPositiveDurationDeviationMs - a.totalPositiveDurationDeviationMs;
+    const statusDifference = statusPriority[a.status] - statusPriority[b.status];
+    if (statusDifference !== 0) return statusDifference;
+    const aTypicalIncrease =
+      a.plannedDurationMs === null || a.typicalDurationMs === null
+        ? -Infinity
+        : a.typicalDurationMs - a.plannedDurationMs;
+    const bTypicalIncrease =
+      b.plannedDurationMs === null || b.typicalDurationMs === null
+        ? -Infinity
+        : b.typicalDurationMs - b.plannedDurationMs;
+    const aRoomierIncrease =
+      a.plannedDurationMs === null || a.roomierDurationMs === null
+        ? -Infinity
+        : a.roomierDurationMs - a.plannedDurationMs;
+    const bRoomierIncrease =
+      b.plannedDurationMs === null || b.roomierDurationMs === null
+        ? -Infinity
+        : b.roomierDurationMs - b.plannedDurationMs;
+
+    if (a.status === 'review-budget' && bTypicalIncrease !== aTypicalIncrease) {
+      return bTypicalIncrease - aTypicalIncrease;
     }
-    const bMedian = b.medianDurationDeviationMs ?? -Infinity;
-    const aMedian = a.medianDurationDeviationMs ?? -Infinity;
-    if (bMedian !== aMedian) return bMedian - aMedian;
-    return a.itemId.localeCompare(b.itemId);
+    if (
+      (a.status === 'review-budget' || a.status === 'consider-buffer') &&
+      bRoomierIncrease !== aRoomierIncrease
+    ) {
+      return bRoomierIncrease - aRoomierIncrease;
+    }
+    if (b.measuredCount !== a.measuredCount) return b.measuredCount - a.measuredCount;
+    return a.timetableIndex - b.timetableIndex;
   });
 
-  const completed = reports.filter((report) => report.finalCompletionDeviationMs !== null);
-
-  return {
-    timetableId,
-    timetableName,
-    runCount: reports.length,
-    versions: [...versions].sort((a, b) => a - b),
-    items,
-    totalPositiveDurationDeviationMs: reports.reduce(
-      (total, report) => total + report.totalPositiveDurationDeviationMs,
-      0,
-    ),
-    medianDayStartDeviationMs: median(reports.map((report) => report.dayStartDeviationMs)),
-    medianFinalCompletionDeviationMs: median(
-      completed.map((report) => report.finalCompletionDeviationMs as number),
-    ),
-  };
+  return { items };
 };

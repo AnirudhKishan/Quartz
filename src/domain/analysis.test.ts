@@ -1,14 +1,16 @@
 import { describe, expect, it } from 'vitest';
 
-import { at, minutes, overnightTimetable, simpleTimetable, simpleTimetableV2 } from '../test/fixtures';
+import { at, minutes, overnightTimetable, simpleTimetable } from '../test/fixtures';
 import { RunDriver } from '../test/runDriver';
 import {
-  buildAggregateReport,
   buildRunReport,
+  buildTimeBudgetAnalysis,
   computePlannedSchedule,
   median,
+  nearestRankPercentile,
   type RunReport,
 } from './analysis';
+import type { Timetable } from './types';
 
 // 05:30 local in Asia/Kolkata. Planned day is 06:00 -> 08:00 local.
 const START = at('2026-03-02T00:00:00.000Z');
@@ -208,88 +210,111 @@ describe('median', () => {
   });
 });
 
-describe('buildAggregateReport', () => {
-  const reportsAcrossVersions = (): RunReport[] => {
-    // Version 1: gym overruns by 30 minutes, breakfast by 5.
-    const first = new RunDriver(simpleTimetable, START, 'run-a')
-      .next(at('2026-03-02T00:30:00.000Z'))
-      .next(at('2026-03-02T02:00:00.000Z'))
-      .next(at('2026-03-02T02:35:00.000Z'));
-
-    // Version 2 keeps the same stable item IDs; gym overruns by 40 minutes.
-    const secondStart = at('2026-03-03T00:00:00.000Z');
-    const second = new RunDriver(simpleTimetableV2, secondStart, 'run-b')
-      .next(at('2026-03-03T00:30:00.000Z'))
-      .next(at('2026-03-03T02:20:00.000Z'))
-      .next(at('2026-03-03T02:50:00.000Z'));
-
-    return [
-      buildRunReport(simpleTimetable, first.run, first.events),
-      buildRunReport(simpleTimetableV2, second.run, second.events),
-    ];
+describe('time budget analysis', () => {
+  const everydayTimetable: Timetable = {
+    ...simpleTimetable,
+    eligibleWeekdays: [
+      'monday',
+      'tuesday',
+      'wednesday',
+      'thursday',
+      'friday',
+      'saturday',
+      'sunday',
+    ],
   };
 
-  it('groups by stable item ID across timetable versions', () => {
-    const aggregate = buildAggregateReport('test-plan', 'Test plan', reportsAcrossVersions());
+  const reportWithWakeDuration = (
+    wakeMinutes: number,
+    day: number,
+    options: { skipWake?: boolean } = {},
+  ): RunReport => {
+    const date = String(day).padStart(2, '0');
+    const start = at(`2026-03-${date}T00:30:00.000Z`);
+    const driver = new RunDriver(everydayTimetable, start, `run-${date}`);
+    const wakeEnd = new Date(start.getTime() + minutes(options.skipWake ? 0 : wakeMinutes));
+    if (options.skipWake) driver.skip(wakeEnd);
+    else driver.next(wakeEnd);
+    driver
+      .next(new Date(wakeEnd.getTime() + minutes(60)))
+      .next(new Date(wakeEnd.getTime() + minutes(90)));
+    return buildRunReport(everydayTimetable, driver.run, driver.events);
+  };
 
-    expect(aggregate.runCount).toBe(2);
-    expect(aggregate.versions).toEqual([1, 2]);
-    expect(aggregate.items.map((item) => item.itemId).sort()).toEqual([
-      'breakfast',
-      'gym',
-      'wake',
-    ]);
-    expect(aggregate.items.every((item) => item.observations === 2)).toBe(true);
+  it('uses the median and nearest-rank 75th percentile', () => {
+    expect(median([39, 40, 40, 40, 40, 45, 50, 55])).toBe(40);
+    expect(nearestRankPercentile([39, 40, 40, 40, 40, 45, 50, 55], 0.75)).toBe(45);
   });
 
-  it('uses the newest version for an item label', () => {
-    const aggregate = buildAggregateReport('test-plan', 'Test plan', reportsAcrossVersions());
-    const wake = aggregate.items.find((item) => item.itemId === 'wake');
+  it('suggests typical and roomier whole-minute budgets from measured active time', () => {
+    const durations = [39, 40, 40, 40, 40, 45, 50, 55];
+    const analysis = buildTimeBudgetAnalysis(
+      everydayTimetable,
+      durations.map((duration, index) => reportWithWakeDuration(duration, index + 2)),
+    );
+    const wake = analysis.items.find((item) => item.itemId === 'wake');
 
-    expect(wake?.label).toBe('Wake up');
+    expect(wake).toMatchObject({
+      status: 'review-budget',
+      measuredCount: 8,
+      typicalDurationMs: minutes(40),
+      roomierDurationMs: minutes(45),
+      typicalSuggestedBudgetMs: minutes(40),
+      roomierSuggestedBudgetMs: minutes(45),
+      overBudgetCount: 8,
+    });
   });
 
-  it('ranks steps by total positive duration deviation', () => {
-    const aggregate = buildAggregateReport('test-plan', 'Test plan', reportsAcrossVersions());
+  it('does not let one exceptional day dominate the estimates', () => {
+    const analysis = buildTimeBudgetAnalysis(
+      everydayTimetable,
+      [10, 10, 10, 10, 10, 10, 10, 180].map((duration, index) =>
+        reportWithWakeDuration(duration, index + 2),
+      ),
+    );
+    const wake = analysis.items.find((item) => item.itemId === 'wake');
 
-    expect(aggregate.items[0]?.itemId).toBe('gym');
-    expect(aggregate.items[0]?.totalPositiveDurationDeviationMs).toBe(minutes(30 + 40));
-    expect(aggregate.items[0]?.medianDurationDeviationMs).toBe(minutes(35));
-    expect(aggregate.items.map((item) => item.itemId)).toEqual(['gym', 'wake', 'breakfast']);
+    expect(wake?.typicalDurationMs).toBe(minutes(10));
+    expect(wake?.roomierDurationMs).toBe(minutes(10));
+    expect(wake?.status).toBe('no-increase');
   });
 
-  it('reports skip count and skip rate per item', () => {
-    const skippedRun = new RunDriver(simpleTimetable, START, 'run-c')
-      .next(at('2026-03-02T00:30:00.000Z'))
-      .skip(at('2026-03-02T02:00:00.000Z'))
-      .next(at('2026-03-02T02:35:00.000Z'));
+  it('requires five measurements and keeps skips out of duration estimates', () => {
+    const measured = [31, 31, 31, 31].map((duration, index) =>
+      reportWithWakeDuration(duration, index + 2),
+    );
+    const skipped = reportWithWakeDuration(0, 6, { skipWake: true });
+    const wake = buildTimeBudgetAnalysis(everydayTimetable, [...measured, skipped]).items.find(
+      (item) => item.itemId === 'wake',
+    );
 
-    const aggregate = buildAggregateReport('test-plan', 'Test plan', [
-      ...reportsAcrossVersions(),
-      buildRunReport(simpleTimetable, skippedRun.run, skippedRun.events),
-    ]);
-    const gym = aggregate.items.find((item) => item.itemId === 'gym');
-
-    expect(gym?.skipCount).toBe(1);
-    expect(gym?.observations).toBe(2);
-    expect(gym?.skipRate).toBeCloseTo(1 / 3);
-    // The skipped observation adds nothing to the deviation total.
-    expect(gym?.totalPositiveDurationDeviationMs).toBe(minutes(70));
+    expect(wake).toMatchObject({
+      status: 'insufficient-evidence',
+      measuredCount: 4,
+      skipCount: 1,
+      typicalDurationMs: minutes(31),
+      typicalSuggestedBudgetMs: null,
+      roomierSuggestedBudgetMs: null,
+    });
   });
 
-  it('reports median start deviation per item', () => {
-    const aggregate = buildAggregateReport('test-plan', 'Test plan', reportsAcrossVersions());
-    const wake = aggregate.items.find((item) => item.itemId === 'wake');
+  it('treats exactly one minute over plan as actionable', () => {
+    const wake = buildTimeBudgetAnalysis(
+      everydayTimetable,
+      [31, 31, 31, 31, 31].map((duration, index) =>
+        reportWithWakeDuration(duration, index + 2),
+      ),
+    ).items.find((item) => item.itemId === 'wake');
 
-    // Both runs started 30 minutes before the planned 06:00.
-    expect(wake?.medianStartDeviationMs).toBe(-minutes(30));
+    expect(wake?.status).toBe('review-budget');
+    expect(wake?.typicalSuggestedBudgetMs).toBe(minutes(31));
   });
 
-  it('returns an empty ranking when there are no runs', () => {
-    const aggregate = buildAggregateReport('test-plan', 'Test plan', []);
+  it('keeps every timetable step when there are no reports', () => {
+    const analysis = buildTimeBudgetAnalysis(everydayTimetable, []);
 
-    expect(aggregate.items).toEqual([]);
-    expect(aggregate.totalPositiveDurationDeviationMs).toBe(0);
-    expect(aggregate.medianDayStartDeviationMs).toBeNull();
+    expect(analysis.items).toHaveLength(simpleTimetable.items.length);
+    expect(analysis.items.every((item) => item.status === 'insufficient-evidence')).toBe(true);
+    expect(analysis.items.every((item) => item.measuredCount === 0)).toBe(true);
   });
 });

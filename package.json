@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.2.0",
   "type": "module",
-  "description": "Quartz — measures whether a day follows a selected timetable, and which items cause deviation.",
+  "description": "Quartz — reviews recorded days and helps tune timetable time budgets.",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",

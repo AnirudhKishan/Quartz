@@ -2,7 +2,7 @@
   "id": ".",
   "name": "Quartz",
   "short_name": "Quartz",
-  "description": "Measures whether your day follows a selected timetable, and which steps cause deviation.",
+  "description": "Reviews recorded days and helps tune timetable time budgets.",
   "start_url": ".",
   "scope": ".",
   "display": "standalone",

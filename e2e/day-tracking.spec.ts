@@ -1,4 +1,11 @@
 import { expect, test, type Page, type TestInfo } from '@playwright/test';
+import { readFileSync } from 'node:fs';
+
+import { createBackupDocument } from '../src/domain/backup';
+import { buildRunReport, computePlannedSchedule } from '../src/domain/analysis';
+import { parseTimetable } from '../src/domain/timetable';
+import type { Run, RunEvent } from '../src/domain/types';
+import { RunDriver } from '../src/test/runDriver';
 
 const MONDAY = new Date('2026-03-02T00:00:00.000Z');
 const EIGHT_THIRTY_IST = new Date('2026-03-02T03:00:00.000Z');
@@ -40,6 +47,73 @@ const startGymDay = async (page: Page, time = MONDAY) => {
     taskCard(page, 'Brush, hydrate and change').locator('xpath=ancestor::li[1]'),
   ).toHaveClass(/timeline-item--current/);
 };
+
+const budgetReviewBackup = () => {
+  const timetable = parseTimetable(
+    JSON.parse(
+      readFileSync(new URL('../src/timetables/weekday-gym.v1.json', import.meta.url), 'utf8'),
+    ),
+    'weekday-gym.v1.json',
+  );
+  const runs: Run[] = [];
+  const events: RunEvent[] = [];
+
+  for (let day = 0; day < 5; day += 1) {
+    const start = new Date(MONDAY.getTime() + day * 24 * 60 * 60_000);
+    const localDate = `2026-03-${String(day + 2).padStart(2, '0')}`;
+    const planned = computePlannedSchedule(timetable, localDate);
+    const driver = new RunDriver(timetable, start, `budget-run-${day + 1}`);
+    let occurredAt = start;
+    planned.forEach((item, index) => {
+      const extra = index === 0 ? 10 * 60_000 : index === 1 ? 15 * 60_000 : 0;
+      occurredAt = new Date(occurredAt.getTime() + item.plannedDurationMs + extra);
+      driver.next(occurredAt);
+    });
+    // Reconstruct here as an extra guard that the generated backup contains valid histories.
+    buildRunReport(timetable, driver.run, driver.events);
+    runs.push(driver.run);
+    events.push(...driver.events);
+  }
+
+  return JSON.stringify(
+    createBackupDocument(
+      { timetables: [timetable], runs, events },
+      new Date('2026-03-07T00:00:00.000Z'),
+    ),
+  );
+};
+
+test('@budget-review shows actionable budgets and evidence without mobile overflow', async ({
+  page,
+}, testInfo) => {
+  await page.goto('/#/data');
+  await page.getByLabel('Choose a backup file').setInputFiles({
+    name: 'budget-review.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(budgetReviewBackup()),
+  });
+  await page.getByRole('button', { name: 'Replace all data' }).click();
+  await expect(page.getByRole('heading', { name: 'Backup restored' })).toBeVisible();
+
+  await page.goto('/#/reports');
+  await page
+    .getByRole('heading', { name: 'Gym weekday', exact: true })
+    .locator('..')
+    .getByRole('link', { name: 'Time budget review' })
+    .click();
+
+  await expect(page.getByRole('heading', { name: 'Time budget review' })).toBeVisible();
+  await expect(page.getByText('2 budgets worth reviewing')).toBeVisible();
+  const brush = page
+    .getByRole('heading', { name: 'Brush, hydrate and change', exact: true })
+    .locator('xpath=ancestor::article[1]');
+  await expect(brush).toContainText('Typical recorded');
+  await expect(brush).toContainText('25 min');
+  await expect(brush).toContainText('Typical budget: 25 min (+10 min)');
+  await brush.getByText('View recorded days').click();
+  await expect(brush.getByRole('link', { name: 'Open day' })).toHaveCount(5);
+  await capture(page, testInfo, 'time-budget-review');
+});
 
 test('@timeline-geometry planned tasks stay on clock time while only the marker follows now', async ({
   page,

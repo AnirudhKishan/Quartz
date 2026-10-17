@@ -64,6 +64,9 @@ export const formatLocalDate = (localDate: string): string => {
 
 export const formatPercent = (rate: number): string => `${Math.round(rate * 100)}%`;
 
+export const formatWholeMinutes = (ms: number): string =>
+  `${Math.round(ms / MINUTE)} min`;
+
 export const formatTotalPositive = (ms: number): string =>
   ms < MINUTE ? 'none' : formatDuration(ms);
 

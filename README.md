@@ -1,7 +1,7 @@
 # Quartz
 
-Quartz measures whether a day follows a selected timetable, and which timetable
-items most consistently cause deviation from the plan.
+Quartz measures how a day follows a selected timetable and uses recent recorded
+durations to review whether individual steps need more planned time.
 
 It is a measurement tool, not a task manager or a coach. There is no account or
 synchronisation: plans and recorded days run in the browser and are stored on
@@ -136,9 +136,9 @@ action and shows a recovery screen instead.
 
 ### Skips are not savings
 
-A skipped item has no start deviation, no actual duration, and no duration
-deviation. It contributes zero to the overrun totals, so skipping an item can
-never improve its score. It is counted and reported separately as a skip.
+A skipped item has no start deviation, actual duration, or duration deviation.
+It is counted separately and is never treated as a zero-duration measurement or
+as evidence that a time budget fits.
 
 Skipping the whole day is a separate, confirmed action available before starting
 or while a day is running. It stops tracking for that local date and excludes the
@@ -146,16 +146,26 @@ entire run from reports, including events recorded before the skip.
 
 ## Measurements
 
-Per item: start deviation, actual duration, and duration deviation. Per run:
-day-start deviation, final completion deviation, skip count and rate, and total
-positive duration deviation. Across runs of the same timetable ID, results are
-grouped by stable item ID and reported as observation count, median start
-deviation, median duration deviation, total positive duration deviation, and skip
-rate.
+Per item: start deviation, active duration, and duration deviation. Split tasks
+sum their active segments; pauses, gaps, and inserted activities stay separate.
+Per run: day-start deviation, final completion deviation, skip count and rate,
+and total positive duration deviation.
 
-The **Steps causing deviation** ranking is ordered by total positive duration
-deviation, so the items that repeatedly overrun — the ones that actually
-accumulate lateness — come first.
+The **Time budget review** uses up to the latest 20 completed local dates from
+one timetable version. When several runs were completed on the same date, only
+the latest is used and the excluded repeats are disclosed. Different timetable
+versions are never pooled.
+
+For each step, the review shows the median active duration as the **typical**
+estimate and the nearest-rank 75th percentile as the **roomier** estimate. A
+suggestion requires at least five measured completions and a difference of at
+least one minute from the plan. Proposed budgets round upward to whole minutes.
+Skipped and unfinished steps do not enter the duration estimates, and the
+underlying days remain linked for inspection and timestamp correction.
+
+These estimates describe recorded active time; they do not identify the cause of
+a late finish or guarantee that increasing a budget will make the day finish
+earlier. Increasing one budget reallocates time within the timetable.
 
 ## Offline and installation
 

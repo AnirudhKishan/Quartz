@@ -622,6 +622,26 @@ describe('reports', () => {
     return context;
   };
 
+  const completeFiveBudgetDays = async () => {
+    const context = setup();
+    const actor = user();
+    for (let day = 0; day < 5; day += 1) {
+      await actor.click(await screen.findByRole('button', { name: 'Start day' }));
+      context.clock.advanceMinutes(40);
+      await actor.click(screen.getByRole('button', { name: /^Next:/ }));
+      context.clock.advanceMinutes(70);
+      await actor.click(await screen.findByRole('button', { name: /^Next:/ }));
+      context.clock.advanceMinutes(40);
+      await actor.click(await screen.findByRole('button', { name: 'Finish day' }));
+      await screen.findByRole('heading', { name: 'Day complete' });
+      if (day < 4) {
+        context.clock.advanceMinutes(24 * 60 - 150);
+        window.location.hash = '#/';
+      }
+    }
+    return context;
+  };
+
   it('reports the day, its steps, and the deviations that were measured', async () => {
     await completeADay();
 
@@ -649,24 +669,42 @@ describe('reports', () => {
     expect(await screen.findByText('20m 00s late')).toBeInTheDocument();
   });
 
-  it('ranks the steps that cause deviation across days', async () => {
+  it('shows a version-specific time budget review with recorded-day evidence', async () => {
     await completeADay();
 
     window.location.hash = '#/reports';
-    await user().click(await screen.findByRole('link', { name: 'Steps causing deviation' }));
+    await user().click(await screen.findByRole('link', { name: 'Time budget review' }));
 
-    const items = await screen.findAllByRole('listitem');
-    expect(within(items[0]!).getByRole('heading')).toHaveTextContent('Wake');
-    expect(within(items[0]!).getByText(/30m 00s over plan/)).toBeInTheDocument();
-    expect(
-      screen.getByText(/Skipped steps are never counted as time saved/),
-    ).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Time budget review' })).toBeVisible();
+    expect(screen.getByText(/version 1 \(current\)/)).toBeVisible();
+    expect(screen.getByText(/do not support a time-budget increase/)).toBeVisible();
+    await user().click(screen.getByText(/Other steps/));
+    const wake = screen.getByRole('heading', { name: 'Wake' }).closest('article')!;
+    expect(within(wake).getByText('Not enough evidence')).toBeVisible();
+    expect(within(wake).getByText(/Five measured completions/)).toBeVisible();
+    expect(wake).not.toHaveTextContent('Typical budget:');
+    await user().click(within(wake).getByText('View recorded days'));
+    expect(within(wake).getByRole('link', { name: 'Open day' })).toBeVisible();
+  });
+
+  it('shows typical and roomier budget suggestions after five measured days', async () => {
+    await completeFiveBudgetDays();
+
+    window.location.hash = '#/reports';
+    await user().click(await screen.findByRole('link', { name: 'Time budget review' }));
+
+    expect(await screen.findByText('3 budgets worth reviewing')).toBeVisible();
+    const wake = screen.getByRole('heading', { name: 'Wake' }).closest('article')!;
+    expect(within(wake).getByText('Review budget')).toBeVisible();
+    expect(wake).toHaveTextContent('Typical budget: 40 min (+10 min)');
+    expect(within(wake).getAllByText('40 min').length).toBeGreaterThan(0);
+    expect(within(wake).getByText(/5 of 5 measured days/)).toBeVisible();
   });
 
   it('says so plainly when nothing has been measured yet', async () => {
     setup({ hash: '#/reports' });
     expect(
-      await screen.findByText('Complete a day to see which steps cause deviation.'),
+      await screen.findByText('Complete a day to review its recorded time budgets.'),
     ).toBeInTheDocument();
   });
 });

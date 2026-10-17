@@ -13,7 +13,7 @@ import { Loading, Screen } from './ui/components/Screen';
 
 export const App = () => {
   const route = useRoute();
-  const { phase, blockingError, telemetry } = useApp();
+  const { phase, blockingError, telemetry, timetables } = useApp();
 
   useEffect(() => {
     telemetry.trackPageView(`screen_${route.kind}`);
@@ -40,7 +40,21 @@ export const App = () => {
     case 'run-report':
       return <RunReportScreen runId={route.runId} />;
     case 'timetable-report':
-      return <TimetableReportScreen timetableId={route.timetableId} />;
+      return (
+        <TimetableReportScreen
+          timetableId={route.timetableId}
+          selectedVersion={route.version}
+          currentVersion={
+            timetables
+              .filter((timetable) => timetable.id === route.timetableId)
+              .reduce<number | null>(
+                (latest, timetable) =>
+                  latest === null ? timetable.version : Math.max(latest, timetable.version),
+                null,
+              )
+          }
+        />
+      );
     case 'data':
       return <DataScreen />;
     default:

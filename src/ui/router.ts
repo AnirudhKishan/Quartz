@@ -5,7 +5,7 @@ export type Route =
   | { kind: 'run' }
   | { kind: 'reports' }
   | { kind: 'run-report'; runId: string }
-  | { kind: 'timetable-report'; timetableId: string }
+  | { kind: 'timetable-report'; timetableId: string; version: number | null }
   | { kind: 'data' };
 
 /**
@@ -15,7 +15,8 @@ export type Route =
  * refresh and deep links working from any base path.
  */
 export const parseRoute = (hash: string): Route => {
-  const path = hash.replace(/^#\/?/, '').split('?')[0] ?? '';
+  const withoutHash = hash.replace(/^#\/?/, '');
+  const [path = '', query = ''] = withoutHash.split('?');
   const [head, ...rest] = path.split('/');
 
   switch (head) {
@@ -24,7 +25,16 @@ export const parseRoute = (hash: string): Route => {
     case 'reports': {
       if (rest[0] === 'run' && rest[1]) return { kind: 'run-report', runId: decodeURIComponent(rest[1]) };
       if (rest[0] === 'timetable' && rest[1]) {
-        return { kind: 'timetable-report', timetableId: decodeURIComponent(rest[1]) };
+        const rawVersion = new URLSearchParams(query).get('version');
+        const parsedVersion = rawVersion === null ? null : Number(rawVersion);
+        return {
+          kind: 'timetable-report',
+          timetableId: decodeURIComponent(rest[1]),
+          version:
+            parsedVersion !== null && Number.isInteger(parsedVersion) && parsedVersion > 0
+              ? parsedVersion
+              : null,
+        };
       }
       return { kind: 'reports' };
     }
@@ -44,7 +54,9 @@ export const routeToHash = (route: Route): string => {
     case 'run-report':
       return `#/reports/run/${encodeURIComponent(route.runId)}`;
     case 'timetable-report':
-      return `#/reports/timetable/${encodeURIComponent(route.timetableId)}`;
+      return `#/reports/timetable/${encodeURIComponent(route.timetableId)}${
+        route.version === null ? '' : `?version=${route.version}`
+      }`;
     case 'data':
       return '#/data';
     default:

@@ -1,3 +1,5 @@
+import { useEffect } from 'react';
+
 import { formatDeviation, formatLocalDate, formatTotalPositive } from '../format';
 import { useApp } from '../store';
 import { useAsync } from '../useAsync';
@@ -29,7 +31,7 @@ export const ReportsScreen = () => {
   return (
     <Screen
       title="Reports"
-      subtitle="Measured days and the steps that cause deviation."
+      subtitle="Measured days and evidence-based time budgets."
       back={{ label: 'Timetables', route: { kind: 'select' } }}
     >
       {data.status === 'loading' && <Loading />}
@@ -39,7 +41,7 @@ export const ReportsScreen = () => {
         <>
           <h2 className="section-title">Across days</h2>
           {data.value.timetables.length === 0 ? (
-            <EmptyState>Complete a day to see which steps cause deviation.</EmptyState>
+            <EmptyState>Complete a day to review its recorded time budgets.</EmptyState>
           ) : (
             <ul className="list">
               {data.value.timetables.map((timetable) => (
@@ -47,12 +49,16 @@ export const ReportsScreen = () => {
                   <h3 className="card__title">{timetable.name}</h3>
                   <p className="card__meta">
                     {timetable.runCount} completed {timetable.runCount === 1 ? 'day' : 'days'}
+                    {' · '}
+                    {timetable.versions.length === 1
+                      ? `version ${timetable.versions[0]}`
+                      : `versions ${timetable.versions.join(', ')}`}
                   </p>
                   <a
                     className="button button--secondary"
                     href={`#/reports/timetable/${encodeURIComponent(timetable.id)}`}
                   >
-                    Steps causing deviation
+                    Time budget review
                   </a>
                 </li>
               ))}
@@ -93,4 +99,3 @@ export const ReportsScreen = () => {
     </Screen>
   );
 };
-import { useEffect } from 'react';
