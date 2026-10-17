@@ -10,6 +10,11 @@ import { sequentialIdGenerator } from '../domain/clock';
 import { QuartzError } from '../domain/errors';
 import { parseTimetable } from '../domain/timetable';
 import type { Timetable } from '../domain/types';
+import type {
+  Feedback,
+  FeedbackChannel,
+  FeedbackSnapshot,
+} from '../infrastructure/feedback';
 import { InMemoryRepository } from '../infrastructure/memoryRepository';
 import type { Telemetry } from '../infrastructure/telemetry';
 import { BUILD_ID } from '../release';
@@ -39,6 +44,7 @@ const setup = (
     hash?: string;
     timetables?: readonly Timetable[];
     telemetry?: Telemetry;
+    feedback?: Feedback;
   } = {},
 ) => {
   window.location.hash = overrides.hash ?? '#/';
@@ -52,6 +58,7 @@ const setup = (
       services={services}
       bundledTimetables={overrides.timetables ?? [simpleTimetable]}
       telemetry={overrides.telemetry}
+      feedback={overrides.feedback}
     >
       <App />
     </AppProvider>,
@@ -61,6 +68,39 @@ const setup = (
 };
 
 const user = () => userEvent.setup();
+
+const feedbackHarness = () => {
+  let snapshot: FeedbackSnapshot = {
+    preferences: { haptics: true, sound: true },
+    hapticsAvailable: true,
+    soundAvailable: true,
+    storageIssue: null,
+    hapticsIssue: null,
+    soundIssue: null,
+  };
+  const listeners = new Set<() => void>();
+  const prepare = vi.fn(async () => undefined);
+  const play = vi.fn();
+  const setEnabled = vi.fn((channel: FeedbackChannel, enabled: boolean) => {
+    snapshot = {
+      ...snapshot,
+      preferences: { ...snapshot.preferences, [channel]: enabled },
+    };
+    listeners.forEach((listener) => listener());
+  });
+  const feedback: Feedback = {
+    getSnapshot: () => snapshot,
+    subscribe: (listener) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    setEnabled,
+    prepare,
+    play,
+    dispose: vi.fn(),
+  };
+  return { feedback, prepare, play, setEnabled };
+};
 
 beforeEach(() => {
   window.location.hash = '#/';
@@ -149,6 +189,41 @@ describe('selection screen', () => {
   });
 });
 
+describe('feedback settings', () => {
+  it('defaults both channels on, changes them independently, and keeps navigation silent', async () => {
+    const { feedback, play, setEnabled } = feedbackHarness();
+    setup({ hash: '#/settings', feedback });
+
+    expect(await screen.findByRole('heading', { name: 'Settings' })).toBeVisible();
+    expect(screen.getByLabelText('Haptic feedback')).toBeChecked();
+    expect(screen.getByLabelText('Sound feedback')).toBeChecked();
+
+    await user().click(screen.getByLabelText('Sound feedback'));
+
+    expect(setEnabled).toHaveBeenCalledWith('sound', false);
+    expect(screen.getByLabelText('Haptic feedback')).toBeChecked();
+    expect(screen.getByLabelText('Sound feedback')).not.toBeChecked();
+    expect(play).not.toHaveBeenCalled();
+
+    await user().click(screen.getByRole('link', { name: /Timetables/ }));
+    expect(await screen.findByRole('heading', { name: 'Quartz' })).toBeVisible();
+    expect(play).not.toHaveBeenCalled();
+  });
+
+  it('prepares and previews each enabled feedback channel', async () => {
+    const { feedback, prepare, play } = feedbackHarness();
+    setup({ hash: '#/settings', feedback });
+    await screen.findByRole('heading', { name: 'Settings' });
+
+    await user().click(screen.getByRole('button', { name: 'Preview haptics' }));
+    await user().click(screen.getByRole('button', { name: 'Preview sound' }));
+
+    expect(play).toHaveBeenCalledWith('success', 'haptics');
+    expect(prepare).toHaveBeenCalledOnce();
+    expect(play).toHaveBeenCalledWith('success', 'sound');
+  });
+});
+
 describe('active run screen', () => {
   const startDay = async () => {
     const context = setup();
@@ -184,6 +259,52 @@ describe('active run screen', () => {
 
     expect(await screen.findByText('Gym in progress')).toBeInTheDocument();
     expect(screen.getByText('10m 00s late')).toBeInTheDocument();
+  });
+
+  it('uses success, completion, and undo feedback exactly once per persisted action', async () => {
+    const { feedback, prepare, play } = feedbackHarness();
+    const { clock } = setup({ feedback });
+    await user().click(await screen.findByRole('button', { name: 'Start day' }));
+    await screen.findByRole('heading', { name: 'Wake' });
+
+    expect(prepare).toHaveBeenCalledTimes(1);
+    expect(play).toHaveBeenLastCalledWith('success');
+    prepare.mockClear();
+    play.mockClear();
+
+    clock.advanceMinutes(30);
+    await user().click(screen.getByRole('button', { name: /^Next:/ }));
+    clock.advanceMinutes(60);
+    await user().click(await screen.findByRole('button', { name: /^Next:/ }));
+    clock.advanceMinutes(30);
+    await user().click(await screen.findByRole('button', { name: 'Finish day' }));
+
+    expect(await screen.findByRole('heading', { name: 'Day complete' })).toBeVisible();
+    expect(play.mock.calls.map(([cue]) => cue)).toEqual(['success', 'success', 'complete']);
+
+    play.mockClear();
+    await user().click(screen.getByRole('button', { name: 'Undo last action' }));
+    expect(await screen.findByText('Breakfast in progress')).toBeVisible();
+    expect(play).toHaveBeenCalledOnce();
+    expect(play).toHaveBeenCalledWith('undo');
+  });
+
+  it('plays one error cue for submitted local time validation', async () => {
+    const { feedback, play } = feedbackHarness();
+    setup({ feedback });
+    const actor = user();
+    await actor.click(await screen.findByRole('button', { name: 'Start day' }));
+    await screen.findByRole('heading', { name: 'Wake' });
+    play.mockClear();
+
+    await actor.click(screen.getByRole('button', { name: 'Open Wake details' }));
+    await actor.click(screen.getByRole('button', { name: 'Edit times' }));
+    await actor.clear(screen.getByLabelText('Start'));
+    await actor.click(screen.getByRole('button', { name: 'Save times' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Choose a valid date and time.');
+    expect(play).toHaveBeenCalledOnce();
+    expect(play).toHaveBeenCalledWith('error');
   });
 
   it('reorders only the remaining tasks for today', async () => {
@@ -755,7 +876,8 @@ describe('backup', () => {
   });
 
   it('warns about data loss and only replaces data after an explicit confirmation', async () => {
-    setup({ hash: '#/data' });
+    const { feedback, play } = feedbackHarness();
+    setup({ hash: '#/data', feedback });
 
     expect(
       await screen.findByText(/Restoring replaces all data currently on this device/),
@@ -780,6 +902,7 @@ describe('backup', () => {
 
     await user().click(within(dialog).getByRole('button', { name: 'Replace all data' }));
     expect(await screen.findByRole('heading', { name: 'Backup restored' })).toBeInTheDocument();
+    expect(play).toHaveBeenCalledWith('success');
   });
 
   it('states plainly that unexported data can be lost', async () => {
@@ -793,7 +916,8 @@ describe('backup', () => {
   });
 
   it('rejects an invalid file and leaves the existing data alone', async () => {
-    setup({ hash: '#/data' });
+    const { feedback, play } = feedbackHarness();
+    setup({ hash: '#/data', feedback });
 
     const file = new File(['{"format":"nope"}'], 'bad.json', { type: 'application/json' });
     await user().upload(await screen.findByLabelText('Choose a backup file'), file);
@@ -801,5 +925,41 @@ describe('backup', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent(/not a Quartz backup/);
     expect(screen.getByText('Your existing data is unchanged.')).toBeInTheDocument();
     expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
+    expect(play).toHaveBeenCalledOnce();
+    expect(play).toHaveBeenCalledWith('error');
+  });
+
+  it('does not claim old data survived when a committed restore cannot reopen', async () => {
+    const { feedback, play } = feedbackHarness();
+    const { repository } = setup({ hash: '#/data', feedback });
+    await screen.findByRole('heading', { name: 'Backup' });
+    vi.spyOn(repository, 'getDayDecision').mockRejectedValueOnce(
+      new Error('Restored data could not be reopened.'),
+    );
+    const backup = JSON.stringify({
+      format: 'quartz.backup',
+      version: 3,
+      exportedAt: '2026-03-02T00:00:00.000Z',
+      timetables: [simpleTimetable],
+      runs: [],
+      events: [],
+    });
+
+    await user().upload(
+      screen.getByLabelText('Choose a backup file'),
+      new File([backup], 'quartz-backup.json', { type: 'application/json' }),
+    );
+    await user().click(
+      within(await screen.findByRole('alertdialog', { name: 'Confirm restore' })).getByRole(
+        'button',
+        { name: 'Replace all data' },
+      ),
+    );
+
+    expect(
+      await screen.findByText('The backup was restored, but Quartz could not reopen the restored data.'),
+    ).toBeVisible();
+    expect(screen.queryByText('Your existing data is unchanged.')).not.toBeInTheDocument();
+    expect(play).toHaveBeenLastCalledWith('error');
   });
 });

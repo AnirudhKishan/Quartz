@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { buildRunReport } from '../../domain/analysis';
 import type { TimelineEventReplacement } from '../../domain/types';
@@ -28,12 +28,13 @@ interface SelectedGap extends TimelineGap {
 }
 
 export const RunReportScreen = ({ runId }: { readonly runId: string }) => {
-  const { services, telemetry } = useApp();
+  const { services, telemetry, feedback } = useApp();
   const [reloadKey, setReloadKey] = useState(0);
   const [selectedActivity, setSelectedActivity] = useState<SelectedActivity | null>(null);
   const [selectedGap, setSelectedGap] = useState<SelectedGap | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<Error | null>(null);
+  const mutationInFlight = useRef(false);
   const data = useAsync(
     async () => {
       const state = await services.runs.loadStateById(runId);
@@ -79,22 +80,28 @@ export const RunReportScreen = ({ runId }: { readonly runId: string }) => {
 
   const { report, state } = data.value;
   const saveTimeline = async (replacements: readonly TimelineEventReplacement[]) => {
+    if (mutationInFlight.current) return false;
+    mutationInFlight.current = true;
     setSaving(true);
     setSaveError(null);
+    void feedback.prepare();
     try {
       await services.runs.editTimeline(runId, replacements);
       setReloadKey((value) => value + 1);
       telemetry.trackEvent('report_timeline_edited', {
         replacementCount: replacements.length,
       });
+      feedback.play('success');
       return true;
     } catch (error) {
       telemetry.trackException(new Error('Report timeline edit failed'), {
         operation: 'report_timeline_edited',
       });
       setSaveError(error instanceof Error ? error : new Error(String(error)));
+      feedback.play('error');
       return false;
     } finally {
+      mutationInFlight.current = false;
       setSaving(false);
     }
   };
@@ -192,8 +199,11 @@ export const RunReportScreen = ({ runId }: { readonly runId: string }) => {
           busy={saving}
           onClose={() => setSelectedGap(null)}
           onAdd={async (label) => {
+            if (mutationInFlight.current) return false;
+            mutationInFlight.current = true;
             setSaving(true);
             setSaveError(null);
+            void feedback.prepare();
             try {
               await services.runs.recordGapTask(
                 runId,
@@ -205,14 +215,17 @@ export const RunReportScreen = ({ runId }: { readonly runId: string }) => {
               telemetry.trackEvent('report_gap_task_recorded', {
                 durationMs: selectedGap.end.getTime() - selectedGap.start.getTime(),
               });
+              feedback.play('success');
               return true;
             } catch (error) {
               telemetry.trackException(new Error('Report gap task failed'), {
                 operation: 'report_gap_task_recorded',
               });
               setSaveError(error instanceof Error ? error : new Error(String(error)));
+              feedback.play('error');
               return false;
             } finally {
+              mutationInFlight.current = false;
               setSaving(false);
             }
           }}

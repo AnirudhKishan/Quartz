@@ -11,6 +11,7 @@ import type { RunState } from '../../domain/types';
 import type { TimelineEventReplacement } from '../../domain/types';
 import { zonedLocalTimeToUtc } from '../../domain/time';
 import { formatStopwatch, formatTimeInZone } from '../format';
+import { useApp } from '../store';
 
 const formatDateTimeInput = (date: Date, timezone: string): string => {
   const parts = new Intl.DateTimeFormat('en-CA', {
@@ -63,6 +64,7 @@ export const TaskDetailsPanel = ({
   onSkip,
   onEditTimes,
 }: TaskDetailsPanelProps) => {
+  const { feedback } = useApp();
   const closeRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -315,6 +317,7 @@ export const TaskDetailsPanel = ({
                   );
                   if (!parsed) {
                     setTimeError('Choose a valid date and time.');
+                    void feedback.prepare().then(() => feedback.play('error'));
                     return;
                   }
                   if (

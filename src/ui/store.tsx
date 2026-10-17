@@ -14,6 +14,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type ReactNode,
 } from 'react';
 
@@ -29,6 +30,13 @@ import type {
   TransitionKind,
 } from '../domain/types';
 import {
+  createNoopFeedback,
+  type Feedback,
+  type FeedbackChannel,
+  type FeedbackCue,
+  type FeedbackSnapshot,
+} from '../infrastructure/feedback';
+import {
   createNoopTelemetry,
   type Telemetry,
   type TelemetryProperties,
@@ -41,6 +49,8 @@ export interface AppStore {
   readonly telemetry: Telemetry;
   readonly telemetryAvailable: boolean;
   readonly telemetryEnabled: boolean;
+  readonly feedback: Feedback;
+  readonly feedbackSnapshot: FeedbackSnapshot;
   readonly phase: AppPhase;
   /** Set only when the app cannot safely offer actions. */
   readonly blockingError: QuartzError | null;
@@ -65,8 +75,9 @@ export interface AppStore {
   editTimeline(replacements: EditTimelineCommand['replacements']): Promise<boolean>;
   skipDay(): Promise<boolean>;
   clearAllData(): Promise<boolean>;
+  setFeedbackEnabled(channel: FeedbackChannel, enabled: boolean): void;
   setTelemetryEnabled(enabled: boolean): Promise<void>;
-  reload(): Promise<void>;
+  reload(): Promise<boolean>;
 }
 
 const AppContext = createContext<AppStore | null>(null);
@@ -90,6 +101,7 @@ export interface AppProviderProps {
   readonly services: Services;
   readonly bundledTimetables: readonly Timetable[];
   readonly telemetry?: Telemetry;
+  readonly feedback?: Feedback;
   readonly children: ReactNode;
 }
 
@@ -97,6 +109,7 @@ export const AppProvider = ({
   services,
   bundledTimetables,
   telemetry = createNoopTelemetry(),
+  feedback = createNoopFeedback(),
   children,
 }: AppProviderProps) => {
   const [phase, setPhase] = useState<AppPhase>('loading');
@@ -107,6 +120,16 @@ export const AppProvider = ({
   const [notice, setNotice] = useState<string | null>(null);
   const [telemetryEnabled, setTelemetryEnabledState] = useState(telemetry.isEnabled());
   const inFlight = useRef(false);
+  const subscribeFeedback = useCallback(
+    (listener: () => void) => feedback.subscribe(listener),
+    [feedback],
+  );
+  const readFeedback = useCallback(() => feedback.getSnapshot(), [feedback]);
+  const feedbackSnapshot = useSyncExternalStore(
+    subscribeFeedback,
+    readFeedback,
+    readFeedback,
+  );
 
   const load = useCallback(
     async (initial: boolean) => {
@@ -125,7 +148,7 @@ export const AppProvider = ({
         setBlockingError(outcome.error);
         setActiveState(null);
         setPhase('blocked');
-        return;
+        return false;
       }
       telemetry.trackEvent('app_ready', {
         initial,
@@ -143,6 +166,7 @@ export const AppProvider = ({
           : null,
       );
       setPhase('ready');
+      return true;
     },
     [services, bundledTimetables, telemetry],
   );
@@ -163,15 +187,25 @@ export const AppProvider = ({
       eventName: string,
       action: () => Promise<RunState | null>,
       properties: TelemetryProperties = {},
+      cue: FeedbackCue = 'success',
+      completionFrom: RunState | null = null,
     ) => {
       if (inFlight.current) return;
       inFlight.current = true;
       setBusy(true);
+      void feedback.prepare();
       try {
         const nextState = await action();
         setActiveState(nextState);
         setNotice(null);
-        if (nextState) telemetry.trackEvent(eventName, properties);
+        if (nextState) {
+          telemetry.trackEvent(eventName, properties);
+          feedback.play(
+            completionFrom?.status === 'active' && nextState.status === 'completed'
+              ? 'complete'
+              : cue,
+          );
+        }
       } catch (error) {
         const quartz = toQuartzError(error);
         telemetry.trackException(new Error('Quartz action failed'), {
@@ -182,22 +216,25 @@ export const AppProvider = ({
         if (isBlockingError(quartz)) {
           setBlockingError(quartz);
           setPhase('blocked');
+          feedback.play('error');
         } else if (quartz.code === 'stale-state' || quartz.code === 'run-completed') {
           try {
             setActiveState(await services.runs.loadActiveState());
           } catch (reloadError) {
             setBlockingError(toQuartzError(reloadError));
             setPhase('blocked');
+            feedback.play('error');
           }
         } else {
           setNotice(quartz.message);
+          feedback.play('error');
         }
       } finally {
         inFlight.current = false;
         setBusy(false);
       }
     },
-    [services, telemetry],
+    [feedback, services, telemetry],
   );
 
   const store = useMemo<AppStore>(
@@ -206,6 +243,8 @@ export const AppProvider = ({
       telemetry,
       telemetryAvailable: telemetry.isAvailable(),
       telemetryEnabled,
+      feedback,
+      feedbackSnapshot,
       phase,
       blockingError,
       activeState,
@@ -226,7 +265,7 @@ export const AppProvider = ({
             });
           }
           return nextState;
-        }),
+        }, {}, 'success', activeState),
       startNext: () =>
         guard('planned_task_started', async () => {
           if (!activeState) return null;
@@ -241,6 +280,7 @@ export const AppProvider = ({
         if (inFlight.current || !activeState) return false;
         inFlight.current = true;
         setBusy(true);
+        void feedback.prepare();
         try {
           setActiveState(
             await services.runs.recordGapTask(
@@ -254,6 +294,7 @@ export const AppProvider = ({
           telemetry.trackEvent('gap_task_recorded', {
             durationMs: endedAt.getTime() - startedAt.getTime(),
           });
+          feedback.play('success');
           return true;
         } catch (error) {
           const quartz = toQuartzError(error);
@@ -268,6 +309,7 @@ export const AppProvider = ({
           } else {
             setNotice(quartz.message);
           }
+          feedback.play('error');
           return false;
         } finally {
           inFlight.current = false;
@@ -298,11 +340,12 @@ export const AppProvider = ({
         guard('transition_undone', async () => {
           if (!activeState) return null;
           return services.runs.undo(activeState);
-        }),
+        }, {}, 'undo'),
       editTimeline: async (replacements) => {
         if (inFlight.current || !activeState) return false;
         inFlight.current = true;
         setBusy(true);
+        void feedback.prepare();
         try {
           setActiveState(
             await services.runs.editTimeline(activeState.run.id, replacements),
@@ -311,6 +354,7 @@ export const AppProvider = ({
           telemetry.trackEvent('timeline_edited', {
             replacementCount: replacements.length,
           });
+          feedback.play('success');
           return true;
         } catch (error) {
           const quartz = toQuartzError(error);
@@ -325,6 +369,7 @@ export const AppProvider = ({
           } else {
             setNotice(quartz.message);
           }
+          feedback.play('error');
           return false;
         } finally {
           inFlight.current = false;
@@ -333,9 +378,11 @@ export const AppProvider = ({
       },
       skipDay: async () => {
         if (inFlight.current) return false;
+        void feedback.prepare();
         const timezone = activeState?.timetable.timezone ?? bundledTimetables[0]?.timezone;
         if (!timezone) {
           setNotice('No timetable timezone is available for this day.');
+          feedback.play('error');
           return false;
         }
         inFlight.current = true;
@@ -349,6 +396,7 @@ export const AppProvider = ({
             hadActiveRun: activeState !== null,
             recordedEventCount: activeState?.events.length ?? 0,
           });
+          feedback.play('success');
           return true;
         } catch (error) {
           const quartz = toQuartzError(error);
@@ -363,6 +411,7 @@ export const AppProvider = ({
           } else {
             setNotice(quartz.message);
           }
+          feedback.play('error');
           return false;
         } finally {
           inFlight.current = false;
@@ -373,13 +422,18 @@ export const AppProvider = ({
         if (inFlight.current) return false;
         inFlight.current = true;
         setBusy(true);
+        void feedback.prepare();
         try {
           await services.repository.clearAll();
           setActiveState(null);
           setDayDecision(null);
           setNotice(null);
-          await load(false);
+          if (!(await load(false))) {
+            feedback.play('error');
+            return false;
+          }
           telemetry.trackEvent('local_data_cleared');
+          feedback.play('success');
           return true;
         } catch (error) {
           telemetry.trackException(new Error('Quartz action failed'), {
@@ -388,12 +442,14 @@ export const AppProvider = ({
           });
           setBlockingError(toQuartzError(error));
           setPhase('blocked');
+          feedback.play('error');
           return false;
         } finally {
           inFlight.current = false;
           setBusy(false);
         }
       },
+      setFeedbackEnabled: (channel, enabled) => feedback.setEnabled(channel, enabled),
       setTelemetryEnabled: async (enabled) => {
         await telemetry.setEnabled(enabled);
         setTelemetryEnabledState(telemetry.isEnabled());
@@ -404,6 +460,8 @@ export const AppProvider = ({
       services,
       telemetry,
       telemetryEnabled,
+      feedback,
+      feedbackSnapshot,
       phase,
       blockingError,
       activeState,

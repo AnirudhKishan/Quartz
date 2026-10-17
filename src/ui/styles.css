@@ -19,6 +19,33 @@
   color-scheme: dark;
 }
 
+.setting-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.setting-row > div {
+  min-width: 0;
+}
+
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-height: 2.75rem;
+  color: var(--text);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.toggle input {
+  width: 1.3rem;
+  height: 1.3rem;
+  accent-color: var(--accent);
+}
+
 * {
   box-sizing: border-box;
 }
@@ -211,6 +238,7 @@ body {
   text-align: center;
   text-decoration: none;
   cursor: pointer;
+  text-decoration: none;
   min-height: 3rem;
 }
 
@@ -315,6 +343,7 @@ body {
 }
 
 .menu-action {
+  display: block;
   width: 100%;
   padding: 0.7rem;
   border: 0;

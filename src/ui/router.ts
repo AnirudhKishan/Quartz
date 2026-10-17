@@ -6,6 +6,7 @@ export type Route =
   | { kind: 'reports' }
   | { kind: 'run-report'; runId: string }
   | { kind: 'timetable-report'; timetableId: string; version: number | null }
+  | { kind: 'settings' }
   | { kind: 'data' };
 
 /**
@@ -40,6 +41,8 @@ export const parseRoute = (hash: string): Route => {
     }
     case 'data':
       return { kind: 'data' };
+    case 'settings':
+      return { kind: 'settings' };
     default:
       return { kind: 'select' };
   }
@@ -59,6 +62,8 @@ export const routeToHash = (route: Route): string => {
       }`;
     case 'data':
       return '#/data';
+    case 'settings':
+      return '#/settings';
     default:
       return '#/';
   }

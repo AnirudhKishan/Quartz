@@ -8,6 +8,7 @@ import { RecoveryScreen } from './ui/screens/RecoveryScreen';
 import { ReportsScreen } from './ui/screens/ReportsScreen';
 import { RunReportScreen } from './ui/screens/RunReportScreen';
 import { SelectionScreen } from './ui/screens/SelectionScreen';
+import { SettingsScreen } from './ui/screens/SettingsScreen';
 import { TimetableReportScreen } from './ui/screens/TimetableReportScreen';
 import { Loading, Screen } from './ui/components/Screen';
 
@@ -27,8 +28,13 @@ export const App = () => {
     );
   }
 
-  // Backup stays reachable while blocked: restoring is the documented recovery.
-  if (phase === 'blocked' && blockingError && route.kind !== 'data') {
+  // Backup and feedback settings stay reachable while data is blocked.
+  if (
+    phase === 'blocked' &&
+    blockingError &&
+    route.kind !== 'data' &&
+    route.kind !== 'settings'
+  ) {
     return <RecoveryScreen error={blockingError} />;
   }
 
@@ -57,6 +63,8 @@ export const App = () => {
       );
     case 'data':
       return <DataScreen />;
+    case 'settings':
+      return <SettingsScreen />;
     default:
       return <SelectionScreen />;
   }

@@ -13,6 +13,21 @@ Quartz ships with two full-day plans: **Gym weekday** and **No-gym weekday**.
 Both are available Monday through Friday in `Asia/Kolkata`; weekends are
 deliberately untracked.
 
+## Haptics and sound
+
+Quartz confirms meaningful actions with brief haptic patterns and subtle,
+locally generated tones. Both channels are on by default and can be changed
+independently from **Settings**. Success, day completion, undo, and errors use
+distinct cues; navigation, selections, timer updates, and opening or dismissing
+controls stay silent.
+
+These preferences are stored separately in this browser, so backup restore and
+**Clear all local data** do not change them. Feedback never leaves the device,
+works offline, and is best-effort: browser permissions, silent or do-not-disturb
+mode, and device hardware can suppress it. Browsers without vibration or Web
+Audio support continue to run Quartz normally and explain the limitation in
+Settings.
+
 ## Running it
 
 ```bash

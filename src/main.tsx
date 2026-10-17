@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 
 import { App } from './App';
 import { createServices } from './application/bootstrap';
+import { createFeedback } from './infrastructure/feedback';
 import { IndexedDbRepository } from './infrastructure/indexedDbRepository';
 import { registerServiceWorker } from './infrastructure/serviceWorker';
 import { createTelemetry } from './infrastructure/telemetry';
@@ -16,6 +17,7 @@ if (!container) throw new Error('Missing #root element');
 const services = createServices(new IndexedDbRepository());
 const bundledTimetables = loadBundledTimetables();
 const telemetry = createTelemetry();
+const feedback = createFeedback();
 
 createRoot(container).render(
   <StrictMode>
@@ -23,6 +25,7 @@ createRoot(container).render(
       services={services}
       bundledTimetables={bundledTimetables}
       telemetry={telemetry}
+      feedback={feedback}
     >
       <App />
     </AppProvider>

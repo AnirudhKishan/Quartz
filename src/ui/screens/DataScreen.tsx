@@ -9,7 +9,12 @@ import { AppVersionCard } from '../components/AppVersionCard';
 
 type Status =
   | { readonly kind: 'idle' }
-  | { readonly kind: 'error'; readonly message: string; readonly details: readonly string[] }
+  | {
+      readonly kind: 'error';
+      readonly message: string;
+      readonly details: readonly string[];
+      readonly existingDataUnchanged: boolean;
+    }
   | { readonly kind: 'confirm'; readonly preview: BackupPreview; readonly fileName: string }
   | { readonly kind: 'restored' };
 
@@ -38,14 +43,17 @@ export const DataScreen = () => {
     telemetryAvailable,
     telemetryEnabled,
     setTelemetryEnabled,
+    feedback,
   } = useApp();
   const [status, setStatus] = useState<Status>({ kind: 'idle' });
   const [working, setWorking] = useState(false);
   const [telemetryWorking, setTelemetryWorking] = useState(false);
+  const [telemetryError, setTelemetryError] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
 
   const exportBackup = async () => {
     setWorking(true);
+    void feedback.prepare();
     try {
       const json = await services.backups.exportToJson();
       const url = URL.createObjectURL(new Blob([json], { type: 'application/json' }));
@@ -56,9 +64,11 @@ export const DataScreen = () => {
       URL.revokeObjectURL(url);
       setStatus({ kind: 'idle' });
       telemetry.trackEvent('backup_exported');
+      feedback.play('success');
     } catch (error) {
       telemetry.trackException(new Error('Backup export failed'), { operation: 'backup_exported' });
-      setStatus({ kind: 'error', ...describe(error) });
+      setStatus({ kind: 'error', ...describe(error), existingDataUnchanged: true });
+      feedback.play('error');
     } finally {
       setWorking(false);
     }
@@ -67,6 +77,7 @@ export const DataScreen = () => {
   /** Validate the whole file before offering to replace anything. */
   const choose = async (file: File) => {
     setWorking(true);
+    void feedback.prepare();
     try {
       const preview = services.backups.preview(await readText(file));
       setStatus({
@@ -84,7 +95,8 @@ export const DataScreen = () => {
       telemetry.trackException(new Error('Backup validation failed'), {
         operation: 'backup_validated',
       });
-      setStatus({ kind: 'error', ...describe(error) });
+      setStatus({ kind: 'error', ...describe(error), existingDataUnchanged: true });
+      feedback.play('error');
     } finally {
       setWorking(false);
       if (fileInput.current) fileInput.current.value = '';
@@ -93,9 +105,21 @@ export const DataScreen = () => {
 
   const confirmRestore = async (preview: BackupPreview) => {
     setWorking(true);
+    void feedback.prepare();
+    let restored = false;
     try {
       await services.backups.restore(preview);
-      await reload();
+      restored = true;
+      if (!(await reload())) {
+        setStatus({
+          kind: 'error',
+          message: 'The backup was restored, but Quartz could not reopen the restored data.',
+          details: ['Use the recovery options shown by Quartz to restore another backup or retry.'],
+          existingDataUnchanged: false,
+        });
+        feedback.play('error');
+        return;
+      }
       setStatus({ kind: 'restored' });
       telemetry.trackEvent('backup_restored', {
         timetableCount: preview.timetableCount,
@@ -103,11 +127,23 @@ export const DataScreen = () => {
         eventCount: preview.eventCount,
         hasActiveRun: preview.hasActiveRun,
       });
+      feedback.play('success');
     } catch (error) {
+      const described = describe(error);
       telemetry.trackException(new Error('Backup restore failed'), {
         operation: 'backup_restored',
       });
-      setStatus({ kind: 'error', ...describe(error) });
+      setStatus({
+        kind: 'error',
+        ...(restored
+          ? {
+              message: 'The backup was restored, but Quartz could not reopen the restored data.',
+              details: [described.message, ...described.details],
+            }
+          : described),
+        existingDataUnchanged: !restored,
+      });
+      feedback.play('error');
     } finally {
       setWorking(false);
     }
@@ -115,8 +151,14 @@ export const DataScreen = () => {
 
   const toggleTelemetry = async () => {
     setTelemetryWorking(true);
+    setTelemetryError(null);
+    void feedback.prepare();
     try {
       await setTelemetryEnabled(!telemetryEnabled);
+      feedback.play('success');
+    } catch (error) {
+      setTelemetryError(error instanceof Error ? error.message : String(error));
+      feedback.play('error');
     } finally {
       setTelemetryWorking(false);
     }
@@ -128,6 +170,10 @@ export const DataScreen = () => {
       subtitle="Your plans and recorded days stay on this device. Export them to keep a copy."
       back={{ label: 'Timetables', route: { kind: 'select' } }}
     >
+      <a className="button button--ghost" href="#/settings">
+        Feedback settings
+      </a>
+
       <section className="card">
         <h2 className="card__title">Where your data lives</h2>
         <p className="card__warning" role="note">
@@ -162,6 +208,11 @@ export const DataScreen = () => {
           >
             {telemetryEnabled ? 'Turn telemetry off' : 'Turn telemetry on'}
           </button>
+        )}
+        {telemetryError && (
+          <p className="error-note" role="alert">
+            {telemetryError}
+          </p>
         )}
         <p className="card__meta">
           This preference is kept separately and is not changed by restoring or clearing Quartz
@@ -218,7 +269,9 @@ export const DataScreen = () => {
               ))}
             </ul>
           )}
-          <p className="card__meta">Your existing data is unchanged.</p>
+          {status.existingDataUnchanged && (
+            <p className="card__meta">Your existing data is unchanged.</p>
+          )}
         </section>
       )}
 

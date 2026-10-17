@@ -20,4 +20,8 @@ describe('time budget review routes', () => {
       version: null,
     });
   });
+
+  it('round-trips feedback settings', () => {
+    expect(parseRoute(routeToHash({ kind: 'settings' }))).toEqual({ kind: 'settings' });
+  });
 });

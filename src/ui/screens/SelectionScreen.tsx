@@ -48,6 +48,7 @@ export const SelectionScreen = () => {
         <nav className="nav">
           <a href="#/reports">Reports</a>
           <a href="#/data">Backup</a>
+          <a href="#/settings">Settings</a>
           <OverflowMenu className="overflow-menu--footer">
             <ClearDataControl compact />
           </OverflowMenu>
