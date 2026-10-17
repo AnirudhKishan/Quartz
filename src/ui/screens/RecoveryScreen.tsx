@@ -52,7 +52,7 @@ export const RecoveryScreen = ({ error }: { readonly error: QuartzError }) => {
         Restore from a backup
       </a>
       <a className="button button--secondary" href="#/settings">
-        Feedback settings
+        Settings
       </a>
       <ClearDataControl />
     </Screen>

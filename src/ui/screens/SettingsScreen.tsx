@@ -1,3 +1,6 @@
+import { useState } from 'react';
+
+import { AppVersionCard } from '../components/AppVersionCard';
 import { Screen } from '../components/Screen';
 import { useApp } from '../store';
 
@@ -7,7 +10,12 @@ export const SettingsScreen = () => {
     feedback,
     feedbackSnapshot,
     setFeedbackEnabled,
+    telemetryAvailable,
+    telemetryEnabled,
+    setTelemetryEnabled,
   } = useApp();
+  const [telemetryWorking, setTelemetryWorking] = useState(false);
+  const [telemetryError, setTelemetryError] = useState<string | null>(null);
   const { preferences } = feedbackSnapshot;
   const back = activeState
     ? { label: 'Running day', route: { kind: 'run' as const } }
@@ -18,10 +26,25 @@ export const SettingsScreen = () => {
     feedback.play('complete', 'sound');
   };
 
+  const toggleTelemetry = async () => {
+    setTelemetryWorking(true);
+    setTelemetryError(null);
+    void feedback.prepare();
+    try {
+      await setTelemetryEnabled(!telemetryEnabled);
+      feedback.play('success');
+    } catch (error) {
+      setTelemetryError(error instanceof Error ? error.message : String(error));
+      feedback.play('error');
+    } finally {
+      setTelemetryWorking(false);
+    }
+  };
+
   return (
     <Screen
       title="Settings"
-      subtitle="Choose how Quartz confirms meaningful actions."
+      subtitle="Manage feedback, privacy, and app updates."
       back={back}
     >
       <section className="card">
@@ -112,6 +135,42 @@ export const SettingsScreen = () => {
         local data do not change these settings. Browser permissions, silent mode, and device
         hardware can still suppress feedback.
       </p>
+
+      <section className="card">
+        <h2 className="card__title">Anonymous telemetry</h2>
+        <p className="card__meta">
+          {telemetryAvailable
+            ? `Telemetry is ${telemetryEnabled ? 'on' : 'off'}.`
+            : 'Telemetry is unavailable in this build.'}
+        </p>
+        <p className="card__warning" role="note">
+          When on, Quartz sends anonymous browser and session identifiers, screen views, feature
+          actions, aggregate measurements, performance data, app version, device information, and
+          errors to Azure Application Insights. It does not send timetable names, task names,
+          backup contents, raw recorded days, or record identifiers.
+        </p>
+        {telemetryAvailable && (
+          <button
+            type="button"
+            className={telemetryEnabled ? 'button button--secondary' : 'button button--primary'}
+            disabled={telemetryWorking}
+            onClick={() => void toggleTelemetry()}
+          >
+            {telemetryEnabled ? 'Turn telemetry off' : 'Turn telemetry on'}
+          </button>
+        )}
+        {telemetryError && (
+          <p className="error-note" role="alert">
+            {telemetryError}
+          </p>
+        )}
+        <p className="card__meta">
+          This preference is kept separately and is not changed by restoring or clearing Quartz
+          data.
+        </p>
+      </section>
+
+      <AppVersionCard />
     </Screen>
   );
 };

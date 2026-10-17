@@ -21,7 +21,7 @@ describe('time budget review routes', () => {
     });
   });
 
-  it('round-trips feedback settings', () => {
+  it('round-trips settings', () => {
     expect(parseRoute(routeToHash({ kind: 'settings' }))).toEqual({ kind: 'settings' });
   });
 });

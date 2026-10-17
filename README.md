@@ -7,7 +7,7 @@ It is a measurement tool, not a task manager or a coach. There is no account or
 synchronisation: plans and recorded days run in the browser and are stored on
 the device. Production builds send anonymous usage, aggregate measurement,
 performance, and error telemetry to Azure Application Insights unless telemetry
-is turned off from the Backup screen.
+is turned off from Settings.
 
 Quartz ships with two full-day plans: **Gym weekday** and **No-gym weekday**.
 Both are available Monday through Friday in `Asia/Kolkata`; weekends are
@@ -190,9 +190,10 @@ shell, the bundled timetable data, and the icons; any in-app route falls back to
 the cached shell. A new worker deliberately does not claim open pages, so an
 update can never reload the app underneath a day in progress.
 
-The Backup and recovery screens show the running release version plus Git commit.
-They also provide **Check for updates** and an explicit **Apply update** action.
-Quartz never reloads into a new build until the user chooses to apply it.
+Settings and the recovery screen show the running release version plus Git
+commit. They also provide **Check for updates** and an explicit **Apply update**
+action. Quartz never reloads into a new build until the user chooses to apply
+it.
 
 ## Your data
 
@@ -207,9 +208,9 @@ Production builds use Azure Application Insights for anonymous browser/session
 identifiers, screen views, feature actions, aggregate measurements, performance
 data, app version, device information, and errors. Quartz does not send
 timetable names, task names, backup contents, raw recorded days, or record
-identifiers. Telemetry is on by default and can be turned off from the Backup
-screen; that preference is stored separately from Quartz data and survives
-backup restore and Clear all local data.
+identifiers. Telemetry is on by default and can be turned off from Settings;
+that preference is stored separately from Quartz data and survives backup
+restore and Clear all local data.
 
 The secondary menu also provides **Clear all local data**. It requires destructive
 confirmation, removes all Quartz data on the device, and reloads the bundled

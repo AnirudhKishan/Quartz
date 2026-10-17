@@ -28,7 +28,7 @@ export const App = () => {
     );
   }
 
-  // Backup and feedback settings stay reachable while data is blocked.
+  // Backup and settings stay reachable while data is blocked.
   if (
     phase === 'blocked' &&
     blockingError &&

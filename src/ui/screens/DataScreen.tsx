@@ -5,7 +5,6 @@ import { isQuartzError } from '../../domain/errors';
 import { navigate } from '../router';
 import { useApp } from '../store';
 import { Screen } from '../components/Screen';
-import { AppVersionCard } from '../components/AppVersionCard';
 
 type Status =
   | { readonly kind: 'idle' }
@@ -40,15 +39,10 @@ export const DataScreen = () => {
     activeState,
     reload,
     telemetry,
-    telemetryAvailable,
-    telemetryEnabled,
-    setTelemetryEnabled,
     feedback,
   } = useApp();
   const [status, setStatus] = useState<Status>({ kind: 'idle' });
   const [working, setWorking] = useState(false);
-  const [telemetryWorking, setTelemetryWorking] = useState(false);
-  const [telemetryError, setTelemetryError] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
 
   const exportBackup = async () => {
@@ -149,31 +143,12 @@ export const DataScreen = () => {
     }
   };
 
-  const toggleTelemetry = async () => {
-    setTelemetryWorking(true);
-    setTelemetryError(null);
-    void feedback.prepare();
-    try {
-      await setTelemetryEnabled(!telemetryEnabled);
-      feedback.play('success');
-    } catch (error) {
-      setTelemetryError(error instanceof Error ? error.message : String(error));
-      feedback.play('error');
-    } finally {
-      setTelemetryWorking(false);
-    }
-  };
-
   return (
     <Screen
       title="Backup"
       subtitle="Your plans and recorded days stay on this device. Export them to keep a copy."
       back={{ label: 'Timetables', route: { kind: 'select' } }}
     >
-      <a className="button button--ghost" href="#/settings">
-        Feedback settings
-      </a>
-
       <section className="card">
         <h2 className="card__title">Where your data lives</h2>
         <p className="card__warning" role="note">
@@ -181,42 +156,6 @@ export const DataScreen = () => {
           browser&apos;s storage on this device only. Uninstalling the app, clearing browser storage
           or site data, or losing the device will remove any data that has not been exported.
           Exported backups are the only copies.
-        </p>
-      </section>
-
-      <AppVersionCard />
-
-      <section className="card">
-        <h2 className="card__title">Anonymous telemetry</h2>
-        <p className="card__meta">
-          {telemetryAvailable
-            ? `Telemetry is ${telemetryEnabled ? 'on' : 'off'}.`
-            : 'Telemetry is unavailable in this build.'}
-        </p>
-        <p className="card__warning" role="note">
-          When on, Quartz sends anonymous browser and session identifiers, screen views, feature
-          actions, aggregate measurements, performance data, app version, device information, and
-          errors to Azure Application Insights. It does not send timetable names, task names,
-          backup contents, raw recorded days, or record identifiers.
-        </p>
-        {telemetryAvailable && (
-          <button
-            type="button"
-            className={telemetryEnabled ? 'button button--secondary' : 'button button--primary'}
-            disabled={telemetryWorking}
-            onClick={() => void toggleTelemetry()}
-          >
-            {telemetryEnabled ? 'Turn telemetry off' : 'Turn telemetry on'}
-          </button>
-        )}
-        {telemetryError && (
-          <p className="error-note" role="alert">
-            {telemetryError}
-          </p>
-        )}
-        <p className="card__meta">
-          This preference is kept separately and is not changed by restoring or clearing Quartz
-          data.
         </p>
       </section>
 

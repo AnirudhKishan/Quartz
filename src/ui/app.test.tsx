@@ -189,7 +189,7 @@ describe('selection screen', () => {
   });
 });
 
-describe('feedback settings', () => {
+describe('settings', () => {
   it('defaults both channels on, changes them independently, and keeps navigation silent', async () => {
     const { feedback, play, setEnabled } = feedbackHarness();
     setup({ hash: '#/settings', feedback });
@@ -221,6 +221,36 @@ describe('feedback settings', () => {
     expect(play).toHaveBeenCalledWith('success', 'haptics');
     expect(prepare).toHaveBeenCalledOnce();
     expect(play).toHaveBeenCalledWith('complete', 'sound');
+  });
+
+  it('discloses anonymous telemetry and persists the user control outside app data', async () => {
+    let enabled = true;
+    const setEnabled = vi.fn(async (next: boolean) => {
+      enabled = next;
+    });
+    const telemetry: Telemetry = {
+      isAvailable: () => true,
+      isEnabled: () => enabled,
+      setEnabled,
+      trackPageView: vi.fn(),
+      trackEvent: vi.fn(),
+      trackMetric: vi.fn(),
+      trackException: vi.fn(),
+    };
+    setup({ hash: '#/settings', telemetry });
+
+    expect(await screen.findByText('Telemetry is on.')).toBeVisible();
+    expect(
+      screen.getByText(/It does not send timetable names, task names, backup contents/),
+    ).toBeVisible();
+    expect(screen.getByRole('heading', { name: 'App version' })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Check for updates' })).toBeVisible();
+
+    await user().click(screen.getByRole('button', { name: 'Turn telemetry off' }));
+
+    expect(setEnabled).toHaveBeenCalledWith(false);
+    expect(await screen.findByText('Telemetry is off.')).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Turn telemetry on' })).toBeVisible();
   });
 });
 
@@ -847,32 +877,14 @@ describe('recovery', () => {
 });
 
 describe('backup', () => {
-  it('discloses anonymous telemetry and persists the user control outside app data', async () => {
-    let enabled = true;
-    const setEnabled = vi.fn(async (next: boolean) => {
-      enabled = next;
-    });
-    const telemetry: Telemetry = {
-      isAvailable: () => true,
-      isEnabled: () => enabled,
-      setEnabled,
-      trackPageView: vi.fn(),
-      trackEvent: vi.fn(),
-      trackMetric: vi.fn(),
-      trackException: vi.fn(),
-    };
-    setup({ hash: '#/data', telemetry });
+  it('keeps the screen focused on exporting and restoring local data', async () => {
+    setup({ hash: '#/data' });
 
-    expect(await screen.findByText('Telemetry is on.')).toBeVisible();
-    expect(
-      screen.getByText(/It does not send timetable names, task names, backup contents/),
-    ).toBeVisible();
-
-    await user().click(screen.getByRole('button', { name: 'Turn telemetry off' }));
-
-    expect(setEnabled).toHaveBeenCalledWith(false);
-    expect(await screen.findByText('Telemetry is off.')).toBeVisible();
-    expect(screen.getByRole('button', { name: 'Turn telemetry on' })).toBeVisible();
+    expect(await screen.findByRole('heading', { name: 'Backup' })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Export backup' })).toBeVisible();
+    expect(screen.getByLabelText('Choose a backup file')).toBeVisible();
+    expect(screen.queryByRole('heading', { name: 'Anonymous telemetry' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'App version' })).not.toBeInTheDocument();
   });
 
   it('warns about data loss and only replaces data after an explicit confirmation', async () => {

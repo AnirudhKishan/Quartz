@@ -188,7 +188,7 @@ export const ActiveRunScreen = () => {
             See the report
           </a>
           <a className="button button--ghost" href="#/settings">
-            Feedback settings
+            Settings
           </a>
         </section>
       ) : phase === 'between' ? (
@@ -223,7 +223,7 @@ export const ActiveRunScreen = () => {
                 Skip day
               </button>
               <a className="menu-action" data-menu-close="true" href="#/settings">
-                Feedback settings
+                Settings
               </a>
               <ClearDataControl compact />
             </OverflowMenu>
@@ -261,7 +261,7 @@ export const ActiveRunScreen = () => {
               Skip day
             </button>
             <a className="menu-action" data-menu-close="true" href="#/settings">
-              Feedback settings
+              Settings
             </a>
             <ClearDataControl compact />
           </OverflowMenu>
@@ -315,7 +315,7 @@ export const ActiveRunScreen = () => {
               Skip day
             </button>
             <a className="menu-action" data-menu-close="true" href="#/settings">
-              Feedback settings
+              Settings
             </a>
             <ClearDataControl compact />
           </OverflowMenu>
