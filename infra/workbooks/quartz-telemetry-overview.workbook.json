@@ -65,7 +65,7 @@
       "type": 3,
       "content": {
         "version": "KqlItem/1.0",
-        "query": "let views = pageViews | where timestamp {TimeRange};\nlet events = customEvents | where timestamp {TimeRange};\nlet failures = exceptions | where timestamp {TimeRange};\nunion\n  (views | summarize Value=dcount(user_Id) | extend Metric='Active users'),\n  (views | summarize Value=dcount(session_Id) | extend Metric='Sessions'),\n  (views | summarize Value=count() | extend Metric='Screen views'),\n  (events | summarize Value=count() | extend Metric='Feature events'),\n  (failures | summarize Value=count() | extend Metric='Exceptions')\n| project Metric, Value",
+        "query": "let pageViewData = pageViews | where timestamp {TimeRange};\nlet customEventData = customEvents | where timestamp {TimeRange};\nlet exceptionData = exceptions | where timestamp {TimeRange};\nunion\n  (pageViewData | summarize Value=dcount(user_Id) | extend Metric='Active users'),\n  (pageViewData | summarize Value=dcount(session_Id) | extend Metric='Sessions'),\n  (pageViewData | summarize Value=count() | extend Metric='Screen views'),\n  (customEventData | summarize Value=count() | extend Metric='Feature events'),\n  (exceptionData | summarize Value=count() | extend Metric='Exceptions')\n| project Metric, Value",
         "size": 4,
         "title": "Overview",
         "queryType": 0,
