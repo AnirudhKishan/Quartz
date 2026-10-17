@@ -78,7 +78,7 @@ test('@timeline-geometry planned tasks stay on clock time while only the marker 
 test('task flyout edits times without gesture-editor artifacts', async ({ page }, testInfo) => {
   await startGymDay(page);
   await page.clock.fastForward('30:00');
-  await page.getByRole('button', { name: 'Next' }).click();
+  await page.getByRole('button', { name: /^Next:/ }).click();
   await page.clock.fastForward('05:00');
 
   const gym = taskCard(page, '🏋️ Gym');
@@ -101,7 +101,7 @@ test('task flyout edits times without gesture-editor artifacts', async ({ page }
 test('a dotted gap adds a named task and survives reload', async ({ page }, testInfo) => {
   await startGymDay(page);
   await page.clock.fastForward('15:00');
-  await chooseOverflowAction(page, 'Finish');
+  await chooseOverflowAction(page, 'Finish current task');
   await page.clock.fastForward('15:00');
   await page.getByRole('button', { name: 'Start 🏋️ Gym' }).click();
 
@@ -147,27 +147,43 @@ test('contextual pause and unplanned-task actions remain available', async ({ pa
   await capture(page, testInfo, 'contextual-actions');
 });
 
+test('mobile overflow dismissal and tap-based reordering stay discoverable', async ({
+  page,
+}, testInfo) => {
+  await startGymDay(page);
+
+  await page.getByRole('button', { name: 'More actions' }).click();
+  const finish = page.getByRole('button', { name: 'Finish current task' });
+  await expect(finish).toBeVisible();
+  await page.locator('.screen').click({ position: { x: 4, y: 4 } });
+  await expect(finish).toBeHidden();
+
+  await page.getByRole('button', { name: 'Change next task' }).click();
+  await expect(page.getByText('This changes the order for today only.')).toBeVisible();
+  await page.getByRole('button', { name: '🥣 Breakfast', exact: true }).click();
+  await expect(taskCard(page, '🥣 Breakfast')).toContainText('Order changed for today');
+  await capture(page, testInfo, 'mobile-reorder');
+});
+
 test('completed report supports flyout editing and gap insertion', async ({ page }, testInfo) => {
   test.setTimeout(60_000);
   await startGymDay(page);
   const plannedMinutes = [
-    15, 75, 30, 60, 15, 30, 60, 165, 45, 225, 75, 15, 15, 45, 45, 15, 15, 15, 480,
+    15, 75, 30, 60, 15, 30, 60, 165, 45, 225, 75, 15, 15, 45, 45, 15, 30, 480,
   ];
   for (let index = 0; index < plannedMinutes.length - 1; index += 1) {
     await page.clock.fastForward(plannedMinutes[index]! * 60_000);
     if (index === 4) {
-      await chooseOverflowAction(page, 'Finish');
+      await chooseOverflowAction(page, 'Finish current task');
       await page.clock.fastForward('05:00');
       await page.getByRole('button', { name: 'Start 🥣 Breakfast' }).click();
     } else {
-      await page.getByRole('button', { name: 'Next' }).click();
+      await page.getByRole('button', { name: /^Next:/ }).click();
     }
   }
   await page.clock.fastForward(plannedMinutes.at(-1)! * 60_000);
   await page.getByRole('button', { name: 'Wake up & finish day' }).click();
-  await expect(page).toHaveURL(/#\/$/);
-  await expect(page.getByRole('heading', { name: 'Gym weekday', exact: true })).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'No-gym weekday', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Day complete' })).toBeVisible();
   await page.goto('/#/reports');
   await page.getByRole('link', { name: 'Open day' }).click();
 

@@ -686,6 +686,24 @@ body {
 
 .sticky-actions .button--dominant {
   font-size: 1.25rem;
+  overflow-wrap: anywhere;
+}
+
+.sticky-actions__secondary {
+  grid-column: 1 / -1;
+  min-height: 2.75rem !important;
+}
+
+.task-choice-list {
+  display: grid;
+  gap: 0.6rem;
+  max-height: min(55vh, 28rem);
+  overflow-y: auto;
+}
+
+.task-choice-list .button {
+  margin: 0;
+  text-align: left;
 }
 
 @media (max-width: 25rem) {
@@ -711,7 +729,13 @@ body {
 }
 
 .completion-actions {
+  display: grid;
+  gap: 0.75rem;
   padding-top: 0.75rem;
+}
+
+.completion-actions .button {
+  margin: 0;
 }
 
 .undo-toast {
@@ -824,6 +848,7 @@ body {
   margin: 0 auto 0.7rem;
   border-radius: 999px;
   background: var(--border);
+  touch-action: none;
 }
 
 .task-details__header {
@@ -862,6 +887,11 @@ body {
   font: inherit;
   font-size: 1.4rem;
   cursor: pointer;
+}
+
+.task-details__close:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
 }
 
 .task-details__times {
@@ -950,6 +980,12 @@ body {
   font-size: 0.78rem;
 }
 
+.task-time-editor__hint {
+  margin: 0 0 0.75rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
 @keyframes task-backdrop-in {
   from { opacity: 0; }
 }
@@ -974,7 +1010,7 @@ body {
     left: auto;
     top: var(--anchor-top) !important;
     width: min(21rem, calc(50vw - 2rem));
-    max-height: calc(100dvh - 2rem);
+    max-height: calc(100dvh - var(--anchor-top) - 1rem);
     padding: 1rem;
     border: 1px solid var(--border);
     border-radius: 1rem;

@@ -2,6 +2,7 @@ import type { QuartzError } from '../../domain/errors';
 import { useApp } from '../store';
 import { Screen } from '../components/Screen';
 import { ClearDataControl } from '../components/ClearDataControl';
+import { AppVersionCard } from '../components/AppVersionCard';
 
 const guidance = (error: QuartzError): string => {
   switch (error.code) {
@@ -11,6 +12,8 @@ const guidance = (error: QuartzError): string => {
       return 'The recorded history of a day cannot be read back safely, so Quartz will not guess what happened. Restore a backup to continue with known-good data.';
     case 'invalid-timetable':
       return 'A stored timetable failed validation, so it cannot be measured against. Restoring a backup replaces it.';
+    case 'timetable-migration-required':
+      return 'Your recorded data still uses the previous schedule. Nothing has been changed. Restore the migrated backup to continue on the new schedule, or clear local data only if you intentionally want a fresh start.';
     default:
       return 'Quartz cannot continue safely with the data currently stored.';
   }
@@ -39,6 +42,8 @@ export const RecoveryScreen = ({ error }: { readonly error: QuartzError }) => {
         )}
         <p className="card__meta code">{error.code}</p>
       </section>
+
+      <AppVersionCard />
 
       <button type="button" className="button button--primary" onClick={() => void reload()}>
         Try again

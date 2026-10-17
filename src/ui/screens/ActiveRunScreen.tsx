@@ -9,6 +9,7 @@ import { DayTimeline } from '../components/DayTimeline';
 import type { TimelineGap } from '../components/DayTimeline';
 import { EmptyState, Screen } from '../components/Screen';
 import { GapTaskPanel, TaskDetailsPanel } from '../components/TaskDetailsPanel';
+import { OverflowMenu } from '../components/OverflowMenu';
 
 interface SelectedActivity {
   readonly id: string;
@@ -44,7 +45,7 @@ export const ActiveRunScreen = () => {
   const [selectedActivity, setSelectedActivity] = useState<SelectedActivity | null>(null);
   const [selectedGap, setSelectedGap] = useState<SelectedGap | null>(null);
   const [showUndo, setShowUndo] = useState(false);
-  const [selectNextDayAfterCompletion, setSelectNextDayAfterCompletion] = useState(false);
+  const [showReorder, setShowReorder] = useState(false);
   const betweenStartedAt =
     activeState?.phase === 'between'
       ? [...activeState.effectiveEvents]
@@ -68,12 +69,6 @@ export const ActiveRunScreen = () => {
     const timer = window.setTimeout(() => setShowUndo(false), 8_000);
     return () => window.clearTimeout(timer);
   }, [showUndo]);
-
-  useEffect(() => {
-    if (selectNextDayAfterCompletion && activeState?.status === 'completed') {
-      navigate({ kind: 'select' });
-    }
-  }, [activeState?.status, selectNextDayAfterCompletion]);
 
   if (!activeState) {
     return (
@@ -103,16 +98,37 @@ export const ActiveRunScreen = () => {
   };
   const handleAdvance = (kind: TransitionKind) =>
     showUndoAfter(() => advance(kind));
-  const finishSleepAndSelectNextDay = async () => {
-    setSelectNextDayAfterCompletion(true);
-    await advance('next');
-  };
   const handleUndo = async () => {
     await undo();
     setShowUndo(false);
   };
   const saveTimeline = async (replacements: readonly TimelineEventReplacement[]) =>
     editTimeline(replacements);
+  const remaining = activeState.orderedItems.slice(
+    activeState.nextIndex ?? activeState.orderedItems.length,
+  );
+  const canChangeNext = status === 'active' && remaining.length > 1;
+  const changeNextButton = canChangeNext ? (
+    <button
+      type="button"
+      className="button button--ghost sticky-actions__secondary"
+      disabled={busy}
+      onClick={() => setShowReorder(true)}
+    >
+      Change next task
+    </button>
+  ) : null;
+  const undoMenuAction = canUndo ? (
+    <button
+      type="button"
+      className="menu-action"
+      data-menu-close="true"
+      disabled={busy}
+      onClick={() => void handleUndo()}
+    >
+      Undo last action
+    </button>
+  ) : null;
 
   return (
     <Screen
@@ -158,6 +174,16 @@ export const ActiveRunScreen = () => {
 
       {completed ? (
         <section className="completion-actions">
+          {canUndo && (
+            <button
+              type="button"
+              className="button button--secondary"
+              disabled={busy}
+              onClick={() => void handleUndo()}
+            >
+              Undo last action
+            </button>
+          )}
           <a className="button button--primary" href={`#/reports/run/${encodeURIComponent(run.id)}`}>
             See the report
           </a>
@@ -173,6 +199,7 @@ export const ActiveRunScreen = () => {
             <small>This time is reported separately.</small>
           </section>
           <div className="sticky-actions">
+            {changeNextButton}
             <button
               type="button"
               className="button button--dominant"
@@ -181,27 +208,24 @@ export const ActiveRunScreen = () => {
             >
               Start {nextItem?.label ?? 'next task'}
             </button>
-            <details className="overflow-menu overflow-menu--footer">
-              <summary role="button" aria-label="More actions">
-                <span className="sr-only">More actions</span>
-                <span aria-hidden="true">•••</span>
-              </summary>
-              <div className="overflow-menu__panel">
-                <button
-                  type="button"
-                  className="menu-action"
-                  disabled={busy}
-                  onClick={() => setConfirmingSkipDay(true)}
-                >
-                  Skip day
-                </button>
-                <ClearDataControl compact />
-              </div>
-            </details>
+            <OverflowMenu className="overflow-menu--footer">
+              {undoMenuAction}
+              <button
+                type="button"
+                className="menu-action"
+                data-menu-close="true"
+                disabled={busy}
+                onClick={() => setConfirmingSkipDay(true)}
+              >
+                Skip day
+              </button>
+              <ClearDataControl compact />
+            </OverflowMenu>
           </div>
         </>
       ) : phase === 'paused' ? (
         <div className="sticky-actions">
+          {changeNextButton}
           <button
             type="button"
             className="button button--dominant"
@@ -210,71 +234,79 @@ export const ActiveRunScreen = () => {
           >
             Resume {resumeTarget?.label ?? 'task'}
           </button>
-          <details className="overflow-menu overflow-menu--footer">
-            <summary role="button" aria-label="More actions">
-              <span className="sr-only">More actions</span>
-              <span aria-hidden="true">•••</span>
-            </summary>
-            <div className="overflow-menu__panel">
-              <button
-                type="button"
-                className="menu-action"
-                disabled={busy}
-                onClick={() => void showUndoAfter(endPaused)}
-              >
-                End {resumeTarget?.label ?? 'task'}
-              </button>
-              <button
-                type="button"
-                className="menu-action"
-                disabled={busy}
-                onClick={() => setConfirmingSkipDay(true)}
-              >
-                Skip day
-              </button>
-              <ClearDataControl compact />
-            </div>
-          </details>
+          <OverflowMenu className="overflow-menu--footer">
+            {undoMenuAction}
+            <button
+              type="button"
+              className="menu-action"
+              data-menu-close="true"
+              disabled={busy}
+              onClick={() => void showUndoAfter(endPaused)}
+            >
+              End {resumeTarget?.label ?? 'task'}
+            </button>
+            <button
+              type="button"
+              className="menu-action"
+              data-menu-close="true"
+              disabled={busy}
+              onClick={() => setConfirmingSkipDay(true)}
+            >
+              Skip day
+            </button>
+            <ClearDataControl compact />
+          </OverflowMenu>
         </div>
       ) : (
         <div className="sticky-actions">
+          {changeNextButton}
           <button
             type="button"
             className="button button--dominant"
             disabled={busy}
-            onClick={() =>
-              void (isFinalSleep ? finishSleepAndSelectNextDay() : handleAdvance('next'))
-            }
+            onClick={() => void handleAdvance('next')}
           >
-            {nextItem ? 'Next' : isFinalSleep ? 'Wake up & finish day' : 'Finish day'}
+            {nextItem
+              ? `Next: ${nextItem.label}`
+              : isFinalSleep
+                ? 'Wake up & finish day'
+                : 'Finish day'}
           </button>
-          <details className="overflow-menu overflow-menu--footer">
-            <summary role="button" aria-label="More actions">
-              <span className="sr-only">More actions</span>
-              <span aria-hidden="true">•••</span>
-            </summary>
-            <div className="overflow-menu__panel">
-              {nextItem && (
-                <button
-                  type="button"
-                  className="menu-action"
-                  disabled={busy}
-                  onClick={() => void handleAdvance('finish')}
-                >
-                  Finish
-                </button>
-              )}
+          <OverflowMenu className="overflow-menu--footer">
+            {undoMenuAction}
+            {nextItem && (
               <button
                 type="button"
                 className="menu-action"
+                data-menu-close="true"
                 disabled={busy}
-                onClick={() => setConfirmingSkipDay(true)}
+                onClick={() => void handleAdvance('finish')}
               >
-                Skip day
+                Finish current task
               </button>
-              <ClearDataControl compact />
-            </div>
-          </details>
+            )}
+            {currentActivity?.kind === 'planned' && (
+              <button
+                type="button"
+                className="menu-action"
+                data-menu-close="true"
+                disabled={busy}
+                onClick={() => void showUndoAfter(pause)}
+              >
+                Pause current task
+              </button>
+            )}
+            <button
+              type="button"
+              className="menu-action"
+              data-menu-close="true"
+              disabled={busy}
+              onClick={() => setConfirmingSkipDay(true)}
+            >
+              Skip day
+            </button>
+            <ClearDataControl compact />
+          </OverflowMenu>
         </div>
       )}
 
@@ -371,6 +403,48 @@ export const ActiveRunScreen = () => {
                 Confirm skip day
               </button>
             </div>
+          </section>
+        </div>
+      )}
+
+      {showReorder && (
+        <div
+          className="modal-backdrop"
+          onPointerDown={(event) => {
+            if (event.target === event.currentTarget) setShowReorder(false);
+          }}
+        >
+          <section
+            className="modal-sheet"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="change-next-title"
+          >
+            <h2 id="change-next-title">Change next task</h2>
+            <p className="modal-sheet__meta">This changes the order for today only.</p>
+            <div className="task-choice-list">
+              {remaining.map((item) => (
+                <button
+                  type="button"
+                  className="button button--secondary"
+                  disabled={busy || item.id === nextItem?.id}
+                  key={item.id}
+                  onClick={() => {
+                    void reorderUpcoming(item.id).then(() => setShowReorder(false));
+                  }}
+                >
+                  {item.id === nextItem?.id ? `Next: ${item.label}` : item.label}
+                </button>
+              ))}
+            </div>
+            <button
+              type="button"
+              className="button button--ghost"
+              disabled={busy}
+              onClick={() => setShowReorder(false)}
+            >
+              Cancel
+            </button>
           </section>
         </div>
       )}

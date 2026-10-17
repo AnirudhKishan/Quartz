@@ -2,6 +2,7 @@
 
 export type QuartzErrorCode =
   | 'invalid-timetable'
+  | 'timetable-migration-required'
   | 'invalid-backup'
   | 'corrupt-history'
   | 'stale-state'
@@ -35,4 +36,5 @@ export const isBlockingError = (error: unknown): boolean =>
   isQuartzError(error) &&
   (error.code === 'storage-unavailable' ||
     error.code === 'corrupt-history' ||
-    error.code === 'invalid-timetable');
+    error.code === 'invalid-timetable' ||
+    error.code === 'timetable-migration-required');

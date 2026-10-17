@@ -422,12 +422,14 @@ describe.each(adapters)('$name satisfies the repository contract', ({ create }) 
     expect(await repository.getRunEvents(run.id)).toHaveLength(1);
   });
 
-  it('replaces a timetable definition in place even after a run has used it', async () => {
+  it('rejects an incompatible definition with the same published version', async () => {
     await repository.createRun(ref, START);
     const changed = { ...simpleTimetable, name: 'Renamed plan' };
 
-    await repository.saveTimetable(changed);
-    expect((await repository.getTimetable('test-plan', 1)).name).toBe('Renamed plan');
+    await expect(repository.saveTimetable(changed)).rejects.toMatchObject({
+      code: 'timetable-migration-required',
+    });
+    expect((await repository.getTimetable('test-plan', 1)).name).toBe('Test plan');
   });
 
   it('allows re-seeding an identical definition', async () => {

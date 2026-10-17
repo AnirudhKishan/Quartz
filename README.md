@@ -53,8 +53,11 @@ in-memory repository.
 ### The plan and reality stay separate
 
 A timetable defines the intended day. A run records what actually happened.
-Bundled timetable updates replace the matching local definition in place, so old
-reports use the current definition unless local data is cleared.
+Once a timetable `(id, version)` has recorded data, its definition is immutable.
+If a release intentionally changes the same published version, Quartz blocks
+tracking without changing local data and keeps Restore and Clear data available.
+This makes an explicit, validated backup migration the only way historical data
+can be reinterpreted.
 
 ### One press, one timestamp
 
@@ -117,6 +120,10 @@ and usable with no network after the first load. The service worker precaches th
 shell, the bundled timetable data, and the icons; any in-app route falls back to
 the cached shell. A new worker deliberately does not claim open pages, so an
 update can never reload the app underneath a day in progress.
+
+The Backup and recovery screens show the running release version plus Git commit.
+They also provide **Check for updates** and an explicit **Apply update** action.
+Quartz never reloads into a new build until the user chooses to apply it.
 
 ## Your data
 

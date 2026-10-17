@@ -40,8 +40,8 @@ const runADay = async (
   return state;
 };
 
-describe('a timetable definition can be replaced in place', () => {
-  it('reinterprets an existing run against the replacement definition', async () => {
+describe('published timetable definitions', () => {
+  it('requires an explicit migration instead of reinterpreting existing history', async () => {
     const repository = new InMemoryRepository(sequentialIdGenerator());
     const clock = clockFrom(DAY_START);
     const services = createServices(repository, clock);
@@ -49,16 +49,14 @@ describe('a timetable definition can be replaced in place', () => {
     await repository.saveTimetable(simpleTimetable);
     await runADay(services, clock, 1, ['next', 'next', 'next'], [30, 60, 30]);
 
-    await repository.saveTimetable({ ...simpleTimetableV2, version: 1 });
+    await expect(
+      repository.saveTimetable({ ...simpleTimetableV2, version: 1 }),
+    ).rejects.toMatchObject({ code: 'timetable-migration-required' });
 
     const runs = await repository.listCompletedRuns();
     const report = await services.reports.loadRunReport(runs[0]!.id);
-
-    expect(report.run.timetableVersion).toBe(1);
-    expect(report.timetable.version).toBe(1);
-    expect(report.observations[0]?.item.label).toBe('Wake up');
-    expect(report.observations[0]?.plannedDurationMs).toBe(20 * 60_000);
-    expect(report.totalPositiveDurationDeviationMs).toBe(10 * 60_000);
+    expect(report.observations[0]?.item.label).toBe('Wake');
+    expect(report.observations[0]?.plannedDurationMs).toBe(30 * 60_000);
   });
 });
 

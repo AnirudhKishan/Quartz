@@ -26,6 +26,7 @@ import {
   planTransition,
   planUndo,
 } from '../domain/transitions';
+import { timetablesEqual } from '../domain/timetable';
 import type {
   DayDecision,
   EditTimelineCommand,
@@ -69,6 +70,14 @@ export class InMemoryRepository implements TimetableRepository {
 
   async saveTimetable(timetable: Timetable): Promise<void> {
     const key = timetableKey(timetable.id, timetable.version);
+    const stored = this.timetables.get(key);
+    if (stored && !timetablesEqual(stored, timetable)) {
+      throw new QuartzError(
+        'timetable-migration-required',
+        'Quartz has a newer schedule, but this device still contains data from the previous schedule.',
+        ['Restore the migrated backup or clear local data before tracking another day.'],
+      );
+    }
     this.timetables.set(key, timetable);
   }
 

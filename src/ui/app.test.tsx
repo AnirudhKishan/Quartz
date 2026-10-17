@@ -12,6 +12,7 @@ import { parseTimetable } from '../domain/timetable';
 import type { Timetable } from '../domain/types';
 import { InMemoryRepository } from '../infrastructure/memoryRepository';
 import { simpleTimetable } from '../test/fixtures';
+import { simpleTimetableV2 } from '../test/fixtures';
 import { AppProvider } from './store';
 
 interface MovableClock extends Clock {
@@ -103,6 +104,21 @@ describe('selection screen', () => {
     expect(await repository.getDayDecision('Asia/Kolkata', '2026-03-02')).not.toBeNull();
     expect(await repository.listRuns()).toEqual([]);
   });
+
+  it('keeps restore and build information reachable when a timetable migration is required', async () => {
+    const repository = new InMemoryRepository(sequentialIdGenerator());
+    await repository.saveTimetable(simpleTimetable);
+
+    setup({
+      repository,
+      timetables: [{ ...simpleTimetableV2, version: 1 }],
+    });
+
+    expect(await screen.findByRole('heading', { name: 'Quartz cannot continue' })).toBeVisible();
+    expect(screen.getByRole('link', { name: 'Restore from a backup' })).toBeVisible();
+    expect(screen.getByRole('heading', { name: 'App version' })).toBeVisible();
+    expect(screen.getByText('0.2.0+dev')).toBeVisible();
+  });
 });
 
 describe('active run screen', () => {
@@ -119,7 +135,7 @@ describe('active run screen', () => {
 
   const finishCurrentTask = async () => {
     await openMoreActions();
-    await user().click(screen.getByRole('button', { name: 'Finish' }));
+    await user().click(screen.getByRole('button', { name: 'Finish current task' }));
   };
 
   it('shows the planned window, the elapsed time, and what is next', async () => {
@@ -136,7 +152,7 @@ describe('active run screen', () => {
     const { clock } = await startDay();
 
     clock.advanceMinutes(40);
-    await user().click(screen.getByRole('button', { name: 'Next' }));
+    await user().click(screen.getByRole('button', { name: /^Next:/ }));
 
     expect(await screen.findByText('Gym in progress')).toBeInTheDocument();
     expect(screen.getByText('10m 00s late')).toBeInTheDocument();
@@ -145,8 +161,9 @@ describe('active run screen', () => {
   it('reorders only the remaining tasks for today', async () => {
     const { repository } = await startDay();
 
-    await user().click(screen.getByRole('button', { name: 'Open Breakfast details' }));
-    await user().click(await screen.findByRole('button', { name: 'Do this next' }));
+    await user().click(screen.getByRole('button', { name: 'Change next task' }));
+    expect(screen.getByText('This changes the order for today only.')).toBeVisible();
+    await user().click(screen.getByRole('button', { name: 'Breakfast' }));
 
     await waitFor(async () =>
       expect((await repository.getActiveRun())?.executionOrder).toEqual([
@@ -157,6 +174,16 @@ describe('active run screen', () => {
     );
     const cards = screen.getAllByRole('listitem');
     expect(within(cards[1]!).getByRole('heading')).toHaveTextContent('Breakfast');
+  });
+
+  it('closes the overflow menu when the user taps outside it', async () => {
+    await startDay();
+    await openMoreActions();
+    const finish = screen.getByRole('button', { name: 'Finish current task' });
+    expect(finish).toBeVisible();
+
+    await user().click(screen.getByLabelText('Timetable day'));
+    expect(finish).not.toBeVisible();
   });
 
   it('keeps the current-time marker on the original planned clock after reordering', async () => {
@@ -218,7 +245,7 @@ describe('active run screen', () => {
     const { clock } = await startDay();
 
     clock.advanceMinutes(40);
-    await user().click(screen.getByRole('button', { name: 'Next' }));
+    await user().click(screen.getByRole('button', { name: /^Next:/ }));
     await screen.findByText('Gym in progress');
 
     clock.advanceMinutes(5);
@@ -226,6 +253,18 @@ describe('active run screen', () => {
 
     expect(await screen.findByText('Wake in progress')).toBeInTheDocument();
     expect(screen.getByText('on time')).toBeInTheDocument();
+  });
+
+  it('keeps Undo available in the overflow menu after the toast is dismissed', async () => {
+    const { clock } = await startDay();
+    clock.advanceMinutes(40);
+    await user().click(screen.getByRole('button', { name: /^Next:/ }));
+    await user().click(screen.getByRole('button', { name: 'Dismiss Undo' }));
+
+    await openMoreActions();
+    await user().click(screen.getByRole('button', { name: 'Undo last action' }));
+
+    expect(await screen.findByText('Wake in progress')).toBeVisible();
   });
 
   it('cannot undo before the first recorded step', async () => {
@@ -260,8 +299,22 @@ describe('active run screen', () => {
     expect(await screen.findByText('Phone call in progress')).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Phone call' })).toBeInTheDocument();
     clock.advanceMinutes(5);
-    await actor.click(screen.getByRole('button', { name: 'Next' }));
+    await actor.click(screen.getByRole('button', { name: /^Next:/ }));
     expect(await screen.findByText('Gym in progress')).toBeInTheDocument();
+  });
+
+  it('does not dismiss a task form with unsaved text on an outside tap', async () => {
+    await startDay();
+    const actor = user();
+    await actor.click(screen.getByRole('button', { name: 'Open Wake details' }));
+    await actor.click(await screen.findByRole('button', { name: 'Start another task' }));
+    await actor.clear(screen.getByLabelText('Task name'));
+    await actor.type(screen.getByLabelText('Task name'), 'Call family');
+
+    const backdrop = document.querySelector<HTMLElement>('.task-details-backdrop')!;
+    await actor.click(backdrop);
+    expect(screen.getByRole('dialog', { name: 'Wake' })).toBeVisible();
+    expect(screen.getByLabelText('Task name')).toHaveValue('Call family');
   });
 
   it('pauses, resumes, and restores the paused state with Undo', async () => {
@@ -294,7 +347,7 @@ describe('active run screen', () => {
     await actor.click(screen.getByRole('button', { name: 'End Wake' }));
 
     expect(await screen.findByText('Between tasks in progress')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Next' })).toBeVisible();
+    expect(screen.getByRole('button', { name: /^Next:/ })).toBeVisible();
   });
 
   it('does not expose the retired timeline editor or timestamp dialogs', async () => {
@@ -310,7 +363,7 @@ describe('active run screen', () => {
     if (!run) throw new Error('expected active run');
 
     clock.advanceMinutes(30);
-    await user().click(screen.getByRole('button', { name: 'Next' }));
+    await user().click(screen.getByRole('button', { name: /^Next:/ }));
     await screen.findByText('Gym in progress');
     const eventsBeforeSkip = await repository.getRunEvents(run.id);
 
@@ -329,18 +382,22 @@ describe('active run screen', () => {
     const { clock, repository } = await startDay();
 
     clock.advanceMinutes(30);
-    await user().click(screen.getByRole('button', { name: 'Next' }));
+    await user().click(screen.getByRole('button', { name: /^Next:/ }));
     clock.advanceMinutes(60);
-    await user().click(await screen.findByRole('button', { name: 'Next' }));
+    await user().click(await screen.findByRole('button', { name: /^Next:/ }));
     clock.advanceMinutes(30);
     await user().click(await screen.findByRole('button', { name: 'Finish day' }));
 
     expect(await screen.findByRole('heading', { name: 'Day complete' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'See the report' })).toBeInTheDocument();
     expect(await repository.getActiveRun()).toBeNull();
+
+    await user().click(screen.getByRole('button', { name: 'Undo last action' }));
+    expect(await screen.findByText('Breakfast in progress')).toBeVisible();
+    expect(await repository.getActiveRun()).not.toBeNull();
   });
 
-  it('finishes overnight sleep into the next day timetable selection', async () => {
+  it('finishes overnight sleep without navigating away so it can be undone', async () => {
     const sleepPlan = (id: string, name: string) =>
       parseTimetable({
         id,
@@ -357,6 +414,7 @@ describe('active run screen', () => {
           },
         ],
       });
+
     const clock = movableClock('2026-08-19T16:00:00.000Z');
     const { repository } = setup({
       clock,
@@ -373,13 +431,57 @@ describe('active run screen', () => {
     clock.advanceMinutes(10 * 60);
     await actor.click(screen.getByRole('button', { name: 'Wake up & finish day' }));
 
-    expect(await screen.findByRole('heading', { name: 'Quartz' })).toBeVisible();
-    expect(screen.getByRole('heading', { name: 'Gym weekday' })).toBeVisible();
-    expect(screen.getByRole('heading', { name: 'No-gym weekday' })).toBeVisible();
+    expect(await screen.findByRole('heading', { name: 'Day complete' })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Undo last action' })).toBeVisible();
     const completed = (await repository.listRuns())[0]!;
     const events = await repository.getRunEvents(completed.id);
     expect(events.at(-1)?.occurredAt.toISOString()).toBe('2026-08-20T02:00:00.000Z');
     expect(completed.status).toBe('completed');
+  });
+
+  it('recovers a forgotten Sleep transition through the shared time editor', async () => {
+    const bedtime = parseTimetable({
+      id: 'bedtime',
+      name: 'Bedtime',
+      version: 1,
+      timezone: 'Asia/Kolkata',
+      eligibleWeekdays: ['monday', 'tuesday'],
+      items: [
+        {
+          id: 'night-routine-and-wind-down',
+          label: 'Night routine and wind down',
+          plannedStart: '21:00',
+          plannedEnd: '21:30',
+        },
+        {
+          id: 'sleep',
+          label: '😴 Sleep',
+          plannedStart: '21:30',
+          plannedEnd: '05:30',
+        },
+      ],
+    });
+    const clock = movableClock('2026-03-02T15:30:00.000Z');
+    const { repository } = setup({ clock, timetables: [bedtime] });
+    const actor = user();
+    await actor.click(await screen.findByRole('button', { name: 'Start day' }));
+
+    clock.advanceMinutes(9 * 60);
+    await actor.click(screen.getByRole('button', { name: 'Next: 😴 Sleep' }));
+    await actor.click(
+      screen.getByRole('button', { name: 'Open Night routine and wind down details' }),
+    );
+    await actor.click(await screen.findByRole('button', { name: 'Edit times' }));
+    await actor.clear(screen.getByLabelText('End'));
+    await actor.type(screen.getByLabelText('End'), '2026-03-02T21:30');
+    await actor.click(screen.getByRole('button', { name: 'Save times' }));
+
+    const run = await repository.getActiveRun();
+    const events = await repository.getRunEvents(run!.id);
+    const sleepStart = events.find(
+      (event) => event.itemId === 'sleep' && event.type === 'started',
+    );
+    expect(sleepStart?.occurredAt.toISOString()).toBe('2026-03-02T16:00:00.000Z');
   });
 
   it('locks the controls while a transition is in flight', async () => {
@@ -398,10 +500,10 @@ describe('active run screen', () => {
     await screen.findByRole('heading', { name: 'Wake' });
 
     await openMoreActions();
-    await user().click(screen.getByRole('button', { name: 'Next' }));
+    await user().click(screen.getByRole('button', { name: /^Next:/ }));
 
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled());
-    expect(screen.getByRole('button', { name: 'Finish' })).toBeDisabled();
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Next:/ })).toBeDisabled());
+    expect(screen.getByRole('button', { name: 'Finish current task' })).toBeDisabled();
 
     gate.release();
     expect(await screen.findByText('Gym in progress')).toBeInTheDocument();
@@ -410,7 +512,7 @@ describe('active run screen', () => {
   it('edits a recorded start from the task flyout', async () => {
     const { clock, repository } = await startDay();
     clock.advanceMinutes(40);
-    await user().click(screen.getByRole('button', { name: 'Next' }));
+    await user().click(screen.getByRole('button', { name: /^Next:/ }));
     await screen.findByText('Gym in progress');
     clock.advanceMinutes(5);
 
@@ -483,9 +585,9 @@ describe('reports', () => {
     await screen.findByRole('heading', { name: 'Wake' });
 
     context.clock.advanceMinutes(60);
-    await user().click(screen.getByRole('button', { name: 'Next' }));
+    await user().click(screen.getByRole('button', { name: /^Next:/ }));
     context.clock.advanceMinutes(60);
-    await user().click(await screen.findByRole('button', { name: 'Next' }));
+    await user().click(await screen.findByRole('button', { name: /^Next:/ }));
     context.clock.advanceMinutes(30);
     await user().click(await screen.findByRole('button', { name: 'Finish day' }));
     await screen.findByRole('heading', { name: 'Day complete' });

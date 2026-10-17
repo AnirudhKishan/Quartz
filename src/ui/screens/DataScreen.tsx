@@ -5,6 +5,7 @@ import { isQuartzError } from '../../domain/errors';
 import { navigate } from '../router';
 import { useApp } from '../store';
 import { Screen } from '../components/Screen';
+import { AppVersionCard } from '../components/AppVersionCard';
 
 type Status =
   | { readonly kind: 'idle' }
@@ -96,6 +97,8 @@ export const DataScreen = () => {
           that has not been exported. Exported backups are the only copies.
         </p>
       </section>
+
+      <AppVersionCard />
 
       <section className="card">
         <h2 className="card__title">Export</h2>

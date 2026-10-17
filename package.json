@@ -1,7 +1,7 @@
 {
   "name": "quartz",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "description": "Quartz — measures whether a day follows a selected timetable, and which items cause deviation.",
   "scripts": {
@@ -13,7 +13,8 @@
     "test:watch": "vitest",
     "test:e2e": "playwright test",
     "lint": "eslint .",
-    "icons": "node scripts/generate-icons.mjs"
+    "icons": "node scripts/generate-icons.mjs",
+    "migrate:backup": "node scripts/migrate-backup.mjs"
   },
   "dependencies": {
     "react": "^18.3.1",

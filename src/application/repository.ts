@@ -28,7 +28,7 @@ import type {
 export interface TimetableRepository {
   listTimetables(): Promise<TimetableSummary[]>;
   getTimetable(id: string, version: number): Promise<Timetable>;
-  /** Store or replace a timetable definition with the same ID and version. */
+  /** Store a new timetable, or accept an identical definition already stored. */
   saveTimetable(timetable: Timetable): Promise<void>;
 
   /**

@@ -29,6 +29,7 @@ import {
   planUndo,
   type PlannedWrite,
 } from '../domain/transitions';
+import { timetablesEqual } from '../domain/timetable';
 import type {
   DayDecision,
   EditTimelineCommand,
@@ -229,10 +230,25 @@ export class IndexedDbRepository implements TimetableRepository {
     const db = await this.database();
     return new Promise((resolve, reject) => {
       const tx = db.transaction([TIMETABLES], 'readwrite');
+      let failure: unknown = null;
       tx.oncomplete = () => resolve();
-      tx.onabort = () => reject(storageError(tx.error));
-      tx.onerror = () => reject(storageError(tx.error));
-      tx.objectStore(TIMETABLES).put(timetable);
+      tx.onabort = () => reject(failure ?? storageError(tx.error));
+      tx.onerror = () => reject(failure ?? storageError(tx.error));
+      const store = tx.objectStore(TIMETABLES);
+      const existing = store.get([timetable.id, timetable.version]);
+      existing.onsuccess = () => {
+        const stored = existing.result as Timetable | undefined;
+        if (stored && !timetablesEqual(stored, timetable)) {
+          failure = new QuartzError(
+            'timetable-migration-required',
+            'Quartz has a newer schedule, but this device still contains data from the previous schedule.',
+            ['Restore the migrated backup or clear local data before tracking another day.'],
+          );
+          tx.abort();
+          return;
+        }
+        store.put(timetable);
+      };
     });
   }
 

@@ -18,11 +18,10 @@
     { "id": "commute-home", "label": "🚗 Commute home", "plannedStart": "17:30", "plannedEnd": "18:45" },
     { "id": "decompress", "label": "Decompress and change", "plannedStart": "18:45", "plannedEnd": "19:00" },
     { "id": "evening-pooja", "label": "🕉️ Evening Pooja", "plannedStart": "19:00", "plannedEnd": "19:15" },
-    { "id": "free-time", "label": "Free time or optional work", "plannedStart": "19:15", "plannedEnd": "20:00" },
+    { "id": "flexible-time", "label": "Flexible time", "plannedStart": "19:15", "plannedEnd": "20:00" },
     { "id": "dinner", "label": "🍽️ Dinner", "plannedStart": "20:00", "plannedEnd": "20:45" },
-    { "id": "dishwasher", "label": "Dishwasher loading", "plannedStart": "20:45", "plannedEnd": "21:00" },
-    { "id": "brush", "label": "🪥 Brush", "plannedStart": "21:00", "plannedEnd": "21:15" },
-    { "id": "wind-down", "label": "Wind down", "plannedStart": "21:15", "plannedEnd": "21:30" },
+    { "id": "dishwasher-trash", "label": "Dishwasher + Trash", "plannedStart": "20:45", "plannedEnd": "21:00" },
+    { "id": "night-routine-and-wind-down", "label": "Night routine and wind down", "plannedStart": "21:00", "plannedEnd": "21:30" },
     { "id": "sleep", "label": "😴 Sleep", "plannedStart": "21:30", "plannedEnd": "05:30" }
   ]
 }

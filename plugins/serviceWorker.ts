@@ -37,6 +37,10 @@ self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(PRECACHE)));
 });
 
+self.addEventListener('message', (event) => {
+  if (event.data?.type === 'SKIP_WAITING') self.skipWaiting();
+});
+
 /*
  * The new worker deliberately does not claim open pages. A day in progress is
  * never reloaded underneath the user; an update takes effect at the next launch.

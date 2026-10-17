@@ -170,11 +170,31 @@ export const TaskDetailsPanel = ({
     upcoming && state.nextItem?.id !== occurrence.id && onReorder !== undefined;
   const canActOnCurrent =
     current && occurrence.kind === 'planned' && state.phase === 'running';
+  const timeDirty =
+    editingTimes &&
+    segments.some((segment) => {
+      if (
+        timeValues[segment.startEventId] !==
+        formatDateTimeInput(segment.startedAt, state.timetable.timezone)
+      ) {
+        return true;
+      }
+      return Boolean(
+        segment.endEventId &&
+          segment.endedAt &&
+          timeValues[segment.endEventId] !==
+            formatDateTimeInput(segment.endedAt, state.timetable.timezone),
+      );
+    });
+  const formDirty = (composing && label !== 'Between tasks') || timeDirty;
+  const dismissIfClean = () => {
+    if (!formDirty) closeAndRestore();
+  };
   return (
     <div
       className="task-details-backdrop"
       onPointerDown={(event) => {
-        if (event.target === event.currentTarget) closeAndRestore();
+        if (event.target === event.currentTarget) dismissIfClean();
       }}
     >
       <section
@@ -188,17 +208,27 @@ export const TaskDetailsPanel = ({
             '--anchor-top': `${Math.max(16, Math.min(anchorTop, window.innerHeight - 360))}px`,
           } as CSSProperties
         }
-        onPointerDown={(event) => {
-          swipeStart.current = event.clientY;
-        }}
-        onPointerUp={(event) => {
-          if (swipeStart.current !== null && event.clientY - swipeStart.current > 90) {
-            closeAndRestore();
-          }
-          swipeStart.current = null;
-        }}
       >
-        <div className="task-details__grabber" aria-hidden="true" />
+        <div
+          className="task-details__grabber"
+          aria-hidden="true"
+          onPointerDown={(event) => {
+            if (!formDirty) swipeStart.current = event.clientY;
+          }}
+          onPointerUp={(event) => {
+            if (
+              !formDirty &&
+              swipeStart.current !== null &&
+              event.clientY - swipeStart.current > 90
+            ) {
+              closeAndRestore();
+            }
+            swipeStart.current = null;
+          }}
+          onPointerCancel={() => {
+            swipeStart.current = null;
+          }}
+        />
         <header className="task-details__header">
           <div>
             <span className="task-details__state">{stateLabel}</span>
@@ -209,7 +239,8 @@ export const TaskDetailsPanel = ({
             type="button"
             className="task-details__close"
             aria-label="Close task details"
-            onClick={closeAndRestore}
+            disabled={formDirty}
+            onClick={dismissIfClean}
           >
             ×
           </button>
@@ -309,6 +340,9 @@ export const TaskDetailsPanel = ({
               });
             }}
           >
+            <p className="task-time-editor__hint">
+              A shared boundary moves both this task&apos;s end and the next task&apos;s start.
+            </p>
             {segments.map((segment, index) => (
               <fieldset className="task-time-editor__segment" key={segment.id}>
                 {segments.length > 1 && <legend>Segment {index + 1}</legend>}
@@ -496,6 +530,7 @@ export const GapTaskPanel = ({
   const inputRef = useRef<HTMLInputElement>(null);
   const [label, setLabel] = useState('Between tasks');
   const [error, setError] = useState<string | null>(null);
+  const dirty = label !== 'Between tasks';
   const close = useCallback(() => {
     onClose();
     window.setTimeout(() => returnFocus?.focus(), 0);
@@ -535,7 +570,7 @@ export const GapTaskPanel = ({
     <div
       className="task-details-backdrop"
       onPointerDown={(event) => {
-        if (event.target === event.currentTarget) close();
+        if (event.target === event.currentTarget && !dirty) close();
       }}
     >
       <section
@@ -561,6 +596,7 @@ export const GapTaskPanel = ({
             type="button"
             className="task-details__close"
             aria-label="Close gap task"
+            disabled={dirty}
             onClick={close}
           >
             ×
