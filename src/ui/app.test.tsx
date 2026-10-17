@@ -11,6 +11,7 @@ import { QuartzError } from '../domain/errors';
 import { parseTimetable } from '../domain/timetable';
 import type { Timetable } from '../domain/types';
 import { InMemoryRepository } from '../infrastructure/memoryRepository';
+import { BUILD_ID } from '../release';
 import { simpleTimetable } from '../test/fixtures';
 import { simpleTimetableV2 } from '../test/fixtures';
 import { AppProvider } from './store';
@@ -117,7 +118,7 @@ describe('selection screen', () => {
     expect(await screen.findByRole('heading', { name: 'Quartz cannot continue' })).toBeVisible();
     expect(screen.getByRole('link', { name: 'Restore from a backup' })).toBeVisible();
     expect(screen.getByRole('heading', { name: 'App version' })).toBeVisible();
-    expect(screen.getByText('0.2.0+dev')).toBeVisible();
+    expect(screen.getByText(BUILD_ID)).toBeVisible();
   });
 });
 
