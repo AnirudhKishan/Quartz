@@ -40,7 +40,12 @@ npm run build      # static bundle in dist/
 ```
 
 `npm run icons` regenerates `public/icons/*.png` from `scripts/generate-icons.mjs`.
-The icons are committed, so a build never depends on an image toolchain.
+The faceted crystal mark has dedicated favicon (32px), Apple touch (180px),
+and PWA (192px and 512px) icons, plus a maskable variant with the whole gem inside
+the safe circle. The icons are committed, so a build never depends on an image
+toolchain. A new icon design should use new filenames in the generator, manifest,
+and HTML so browsers and the offline cache pick it up through the normal,
+user-controlled app update.
 
 ## Deploying
 

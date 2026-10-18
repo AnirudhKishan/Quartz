@@ -14,12 +14,8 @@ import { fileURLToPath } from 'node:url';
 const OUT_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'public', 'icons');
 
 const BACKGROUND = [13, 17, 23];
-const FACE = [23, 54, 95];
-const HIGHLIGHT = [33, 77, 131];
-const OUTLINE = [55, 135, 247];
-const TIMELINE = [169, 207, 255];
-const CURRENT = [248, 81, 73];
-const WHITE = [255, 255, 255];
+const FACE_TOP = [160, 225, 255];
+const FACE_BOTTOM = [63, 145, 237];
 
 const crcTable = Array.from({ length: 256 }, (_, n) => {
   let c = n;
@@ -70,96 +66,47 @@ const encodePng = (size, pixel) => {
 };
 
 /**
- * The Quartz timeline inside a faceted crystal.
+ * An icy-blue faceted quartz crystal.
  *
- * `inset` shrinks the mark so a maskable icon survives being cropped to a circle.
+ * Coordinates are relative to the crystal's radius. The maskable target keeps
+ * the whole crystal inside the central safe circle (40% of the image width).
  */
-const timelinePrism = (size, inset) => {
-  const cx = size / 2;
-  const cy = size / 2;
+const crystal = (size, inset) => {
   const radius = (size / 2) * inset;
-  const inCrystal = (x, y, shapeRadius) => {
-    const dx = x - cx;
-    const dy = y - cy;
-    const halfWidth = shapeRadius * 0.62;
-    const shoulder = shapeRadius * 0.5;
-    if (Math.abs(dx) > halfWidth) return false;
-    const taper = Math.max(0, Math.abs(dy) - shoulder) / (shapeRadius - shoulder);
-    return Math.abs(dy) <= shapeRadius && Math.abs(dx) <= halfWidth * (1 - taper);
-  };
-  const nearSegment = (x, y, x1, y1, x2, y2, width) => {
-    const vx = x2 - x1;
-    const vy = y2 - y1;
-    const lengthSquared = vx * vx + vy * vy;
-    const projection = Math.max(
-      0,
-      Math.min(1, ((x - x1) * vx + (y - y1) * vy) / lengthSquared),
-    );
-    const dx = x - (x1 + projection * vx);
-    const dy = y - (y1 + projection * vy);
-    return dx * dx + dy * dy <= width * width;
-  };
+  const outline = [
+    [0, -1], [0.8, -0.5], [0.8, 0.5],
+    [0, 1], [-0.8, 0.5], [-0.8, -0.5],
+  ];
+  const face = [
+    [0, -0.69], [0.53, -0.35], [0.53, 0.35],
+    [0, 0.69], [-0.53, 0.35], [-0.53, -0.35],
+  ];
+  const facetColors = [
+    [130, 204, 255], [58, 130, 224], [41, 100, 204],
+    [71, 154, 241], [113, 202, 255], [205, 244, 255],
+  ];
+  const facets = outline.map((point, index) => {
+    const next = (index + 1) % outline.length;
+    return {
+      points: [point, outline[next], face[next], face[index]],
+      color: facetColors[index],
+    };
+  });
+  const inPolygon = (x, y, points) =>
+    points.every(([x1, y1], index) => {
+      const [x2, y2] = points[(index + 1) % points.length];
+      return (x2 - x1) * (y - y1) - (y2 - y1) * (x - x1) >= 0;
+    });
   const sample = (x, y) => {
-    if (!inCrystal(x, y, radius)) return BACKGROUND;
-    if (!inCrystal(x, y, radius - Math.max(2, radius * 0.035))) return OUTLINE;
-
-    const base = x < cx ? HIGHLIGHT : FACE;
-    const timelineX = cx - radius * 0.23;
-    const timelineTop = cy - radius * 0.64;
-    const timelineBottom = cy + radius * 0.64;
-    const lineWidth = Math.max(1.25, radius * 0.022);
-    const nodeRadius = radius * 0.075;
-    const nodeStroke = radius * 0.025;
-    const nodes = [-0.52, -0.06, 0.52].map((offset) => cy + radius * offset);
-
-    const currentY = cy + radius * 0.16;
-    if (
-      nearSegment(
-        x,
-        y,
-        cx - radius * 0.47,
-        currentY,
-        cx + radius * 0.48,
-        currentY,
-        radius * 0.027,
-      )
-    ) {
-      return CURRENT;
+    const px = (x - size / 2) / radius;
+    const py = (y - size / 2) / radius;
+    if (!inPolygon(px, py, outline)) return BACKGROUND;
+    if (!inPolygon(px, py, face)) {
+      return facets.find((facet) => inPolygon(px, py, facet.points)).color;
     }
 
-    if (nearSegment(x, y, timelineX, timelineTop, timelineX, timelineBottom, lineWidth)) {
-      return TIMELINE;
-    }
-
-    for (const nodeY of nodes) {
-      const distance = Math.hypot(x - timelineX, y - nodeY);
-      if (distance <= nodeRadius - nodeStroke) return BACKGROUND;
-      if (distance <= nodeRadius) return TIMELINE;
-    }
-
-    if (Math.hypot(x - timelineX, y - currentY) <= radius * 0.047) return WHITE;
-
-    const bars = [
-      { y: cy - radius * 0.54, end: cx + radius * 0.38 },
-      { y: cy - radius * 0.08, end: cx + radius * 0.25 },
-      { y: cy + radius * 0.5, end: cx + radius * 0.42 },
-    ];
-    for (const bar of bars) {
-      if (
-        nearSegment(
-          x,
-          y,
-          cx + radius * 0.01,
-          bar.y,
-          bar.end,
-          bar.y,
-          radius * 0.032,
-        )
-      ) {
-        return OUTLINE;
-      }
-    }
-    return base;
+    const blend = (py + 0.69) / 1.38;
+    return FACE_TOP.map((channel, index) => channel + (FACE_BOTTOM[index] - channel) * blend);
   };
 
   return (x, y) => {
@@ -180,12 +127,14 @@ const timelinePrism = (size, inset) => {
 mkdirSync(OUT_DIR, { recursive: true });
 
 const targets = [
-  { name: 'icon-192.png', size: 192, inset: 0.8 },
-  { name: 'icon-512.png', size: 512, inset: 0.8 },
-  { name: 'maskable-512.png', size: 512, inset: 0.55 },
+  { name: 'crystal-32.png', size: 32, inset: 0.84 },
+  { name: 'crystal-180.png', size: 180, inset: 0.84 },
+  { name: 'crystal-192.png', size: 192, inset: 0.84 },
+  { name: 'crystal-512.png', size: 512, inset: 0.84 },
+  { name: 'crystal-maskable-512.png', size: 512, inset: 0.72 },
 ];
 
 for (const { name, size, inset } of targets) {
-  writeFileSync(join(OUT_DIR, name), encodePng(size, timelinePrism(size, inset)));
+  writeFileSync(join(OUT_DIR, name), encodePng(size, crystal(size, inset)));
   console.log(`wrote ${name} (${size}x${size})`);
 }

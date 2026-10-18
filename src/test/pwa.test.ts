@@ -9,6 +9,7 @@
 
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { inflateSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
 
 import { loadBundledTimetables } from '../infrastructure/timetableAssets';
@@ -27,6 +28,7 @@ describe('web app manifest', () => {
   const manifest = JSON.parse(
     readFileSync(resolve(root, 'public/manifest.webmanifest'), 'utf-8'),
   ) as Record<string, unknown>;
+  const icons = manifest.icons as { src: string; sizes: string; purpose?: string }[];
 
   it('declares a name, standalone display, and theme colours', () => {
     expect(manifest.name).toBe('Quartz');
@@ -42,7 +44,6 @@ describe('web app manifest', () => {
   });
 
   it('declares the icon sizes Android needs to install, including a maskable one', () => {
-    const icons = manifest.icons as { src: string; sizes: string; purpose?: string }[];
     expect(icons.map((icon) => icon.sizes)).toEqual(
       expect.arrayContaining(['192x192', '512x512']),
     );
@@ -55,6 +56,68 @@ describe('web app manifest', () => {
       expect(png.width).toBe(width);
       expect(png.height).toBe(height);
     }
+  });
+
+  it('keeps the entire maskable mark within the central 40%-radius safe circle', () => {
+    const icon = icons.find((entry) => entry.purpose === 'maskable');
+    if (!icon) throw new Error('Missing maskable icon');
+    const buffer = readIcon(icon.src.replace('icons/', ''));
+    const { width, height } = pngSize(buffer);
+    expect(buffer[24]).toBe(8);
+    expect(buffer[25]).toBe(2); // The generator writes opaque RGB PNGs.
+    const compressed: Buffer[] = [];
+    for (let offset = 8; offset < buffer.length;) {
+      const length = buffer.readUInt32BE(offset);
+      if (buffer.toString('ascii', offset + 4, offset + 8) === 'IDAT') {
+        compressed.push(buffer.subarray(offset + 8, offset + 8 + length));
+      }
+      offset += length + 12;
+    }
+    const pixels = inflateSync(Buffer.concat(compressed));
+    const stride = width * 3 + 1;
+    expect(pixels.length).toBe(stride * height);
+    let markedPixels = 0;
+    let furthestPixel = 0;
+    for (let y = 0; y < height; y += 1) {
+      expect(pixels[y * stride]).toBe(0);
+      for (let x = 0; x < width; x += 1) {
+        const offset = y * stride + 1 + x * 3;
+        if (
+          pixels[offset] === 13 &&
+          pixels[offset + 1] === 17 &&
+          pixels[offset + 2] === 23
+        ) continue;
+        markedPixels += 1;
+        furthestPixel = Math.max(
+          furthestPixel,
+          Math.hypot(x + 0.5 - width / 2, y + 0.5 - height / 2),
+        );
+      }
+    }
+    expect(markedPixels).toBeGreaterThan(0);
+    expect(furthestPixel).toBeLessThanOrEqual(width * 0.4);
+  });
+});
+
+describe('browser and Apple icons', () => {
+  const html = new DOMParser().parseFromString(
+    readFileSync(resolve(root, 'index.html'), 'utf-8'),
+    'text/html',
+  );
+
+  it.each([
+    ['icon', 32],
+    ['apple-touch-icon', 180],
+  ])('links a dedicated %s at its native size', (rel, size) => {
+    const link = html.querySelector(`link[rel="${rel}"]`);
+    const href = link?.getAttribute('href');
+    if (!href) throw new Error(`Missing ${rel} link`);
+    expect(href.startsWith('icons/')).toBe(true);
+    expect(link?.getAttribute('sizes')).toBe(`${size}x${size}`);
+    const png = pngSize(readIcon(href.replace('icons/', '')));
+    expect(png.signature).toBe('89504e470d0a1a0a');
+    expect(png.width).toBe(size);
+    expect(png.height).toBe(size);
   });
 });
 
